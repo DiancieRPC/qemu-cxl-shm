@@ -49,6 +49,11 @@ private:
 
   mutable std::mutex state_mutex_;
 
+  // BAR mapping
+  int bar_idx_ = -1;
+  uint64_t data_bar_mapping_ = 0;
+  uint64_t data_bar_size_ = 0;
+
   // Queue management for RPC lifecycle
   uint64_t base_addr_ = 0; // TODO: Remove
   uint64_t base_size_ = 0; // TODO: Remove
@@ -71,27 +76,24 @@ public:
     if (!channel_info.has_value()) {
       throw std::runtime_error("Failed to request channel!");
     }
-
     channel_id_ = channel_info->channel_id;
-    // Unfortunately, I have to violate abstraction barrier here to facilitate
-    // testing of testing
-    // TODO: Remove soon
-    base_addr_ = reinterpret_cast<uint64_t>(bar2_base_) + channel_info->offset;
-    base_size_ = channel_info->size;
+    // 2. Acquire which BAR to use (tho for client it dont matter)
+    //    just to enforce same function for both client/server
+    //    and maybe multiple RPC clients in the same userspace program
+    bar_idx_ = set_memory_window(channel_info->size, channel_id_);
+    if (bar_idx_ == -1) {
+      release_channel();
+      throw std::runtime_error("No available BAR");
+    }
+    // 3. Map the bar mapping base and size so we can write to it
+    setup_shared_memory(bar_idx_, &data_bar_mapping_, &data_bar_size_);
 
     client_queue_ = reinterpret_cast<QueueEntry *>(
-        base_addr_ + DiancieHeap::CLIENT_QUEUE_OFFSET);
+        data_bar_mapping_ + DiancieHeap::CLIENT_QUEUE_OFFSET);
     server_queue_ = reinterpret_cast<QueueEntry *>(
-        base_addr_ + DiancieHeap::SERVER_QUEUE_OFFSET);
-    data_area_ = base_addr_ + DiancieHeap::DATA_AREA_OFFSET;
+        data_bar_mapping_ + DiancieHeap::SERVER_QUEUE_OFFSET);
+    data_area_ = data_bar_mapping_ + DiancieHeap::DATA_AREA_OFFSET;
     next_data_offset_ = 0;
-
-    // 2. Map mem window
-    if (!set_memory_window(channel_info->offset, channel_info->size,
-                           channel_info->channel_id)) {
-      release_channel();
-      throw std::runtime_error("Failed to set memory window for channel!");
-    }
 
     // Future: Heartbeat management?
     set_state(ClientState::CONNECTED);

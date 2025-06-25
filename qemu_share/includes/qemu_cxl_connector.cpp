@@ -1,5 +1,6 @@
 #include "a_cxl_connector.hpp"
 #include "qemu_cxl_connector.hpp"
+#include <cstdint>
 #include <cstring>
 #include <fcntl.h>
 #include <iostream>
@@ -43,20 +44,20 @@ QEMUCXLConnector::QEMUCXLConnector(const std::string &device_path)
     throw std::runtime_error("Failed to mmap BAR1: " + device_path_);
   }
 
-  // TODO: Temporary workaround until I figure out how to expose CXL mem frfr
-  bar2_size_ = DEFAULT_BAR2_SIZE;
-  bar2_base_ = mmap(nullptr, bar2_size_, PROT_READ | PROT_WRITE, MAP_SHARED,
-                    device_fd_, BAR2_MMAP_OFFSET);
-  if (bar2_base_ == MAP_FAILED) {
-    munmap(bar1_base_, bar1_size_);
-    munmap(bar0_base_, bar0_size_);
-    close(device_fd_);
-    throw std::runtime_error("Failed to mmap BAR2: " + device_path_);
-  }
+  // // TODO: Temporary workaround until I figure out how to expose CXL mem frfr
+  // bar2_size_ = DEFAULT_BAR2_SIZE;
+  // bar2_base_ = mmap(nullptr, bar2_size_, PROT_READ | PROT_WRITE, MAP_SHARED,
+  //                   device_fd_, BAR2_MMAP_OFFSET);
+  // if (bar2_base_ == MAP_FAILED) {
+  //   munmap(bar1_base_, bar1_size_);
+  //   munmap(bar0_base_, bar0_size_);
+  //   close(device_fd_);
+  //   throw std::runtime_error("Failed to mmap BAR2: " + device_path_);
+  // }
 
   // 3. Setup event fds
   if (!setup_eventfd(eventfd_notify_, CXL_SWITCH_IOCTL_SET_EVENTFD_NOTIFY)) {
-    munmap(bar2_base_, bar2_size_);
+    // munmap(bar2_base_, bar2_size_);
     munmap(bar1_base_, bar1_size_);
     munmap(bar0_base_, bar0_size_);
     close(device_fd_);
@@ -65,7 +66,7 @@ QEMUCXLConnector::QEMUCXLConnector(const std::string &device_path)
 
   if (!setup_eventfd(eventfd_cmd_ready_, CXL_SWITCH_IOCTL_SET_EVENTFD_CMD_READY)) {
     cleanup_eventfd(eventfd_notify_);
-    munmap(bar2_base_, bar2_size_);
+    // munmap(bar2_base_, bar2_size_);
     munmap(bar1_base_, bar1_size_);
     munmap(bar0_base_, bar0_size_);
     close(device_fd_);
@@ -74,14 +75,14 @@ QEMUCXLConnector::QEMUCXLConnector(const std::string &device_path)
 
   std::cout << "QEMU CXL Connector initialized. Device = " << device_path_
           << ", BAR0 mmapped at " << bar0_base_ << ", BAR1 mmapped at "
-          << bar1_base_ << ", BAR2 mapped at " << bar2_base_ << ", notify_efd " << eventfd_notify_
+          << bar1_base_ << ", notify_efd " << eventfd_notify_
           << ", cmd_ready_efd " << eventfd_cmd_ready_ << std::endl;
 }
 
 QEMUCXLConnector::~QEMUCXLConnector() {
   cleanup_eventfd(eventfd_cmd_ready_);
   cleanup_eventfd(eventfd_notify_);
-  munmap(bar2_base_, bar2_size_);
+  // munmap(bar2_base_, bar2_size_);
   munmap(bar1_base_, bar1_size_);
   munmap(bar0_base_, bar0_size_);
   close(device_fd_);
@@ -176,48 +177,33 @@ void QEMUCXLConnector::clear_notification_status(uint32_t bits_to_clear) {
   std::cout << "DiancieServer: Cleared notification status bits: 0x" << std::hex << bits_to_clear << std::dec << std::endl;
 }
 
-bool QEMUCXLConnector::set_memory_window(uint64_t offset, uint64_t size, uint64_t channel_id) {
-  cxl_ipc_rpc_set_bar2_window_req_t req;
+// Request a
+int QEMUCXLConnector::set_memory_window(uint64_t size, uint64_t channel_id) {
+  cxl_ipc_rpc_set_conn_bar_req_t req;
   std::memset(&req, 0, sizeof(req));
-  req.type = CXL_MSG_TYPE_RPC_SET_BAR2_WINDOW_REQ;
-  req.offset = offset;
+  req.type = CXL_MSG_TYPE_RPC_SET_CONN_BAR_REQ;
   req.size = size;
   req.channel_id = channel_id;
 
   std::cout << "QEMUCXLConnector: Sending memory window request "
-            << "Offset: 0x" << std::hex << req.offset
-            << ", Size: 0x" << req.size << std::dec 
+            << ", Size: 0x" << std::hex << req.size << std::dec 
             << ", Channel ID: " << channel_id << std::endl;
 
-  if (send_command(&req, sizeof(req))) {
-    cxl_ipc_rpc_set_bar2_window_resp_t resp;
-    recv_response(&resp, sizeof(resp));
-    return resp.status == CXL_IPC_STATUS_OK;
-  }
-
-  return false;
+  send_command(&req, sizeof(req));
+  
+  cxl_ipc_rpc_set_conn_bar_resp_t resp;
+  recv_response(&resp, sizeof(resp));
+  return (resp.status == CXL_IPC_STATUS_OK) ? resp.bar_idx : -1;
 }
 
-void QEMUCXLConnector::write_u64(uint64_t offset, uint64_t value) {
-  if (bar2_base_ == nullptr) {
-    throw std::runtime_error("BAR2 memory window not set. Call set_memory_window() first.");
+void QEMUCXLConnector::setup_shared_memory(int bar_number, uint64_t* base, uint64_t* size) {
+  void* mapping = mmap(nullptr, *size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                    device_fd_, bar_number);
+  if (mapping == MAP_FAILED) {
+    throw std::runtime_error("Failed to mmap BAR" + std::to_string(bar_number) + ": " + device_path_);
   }
-  if (offset + sizeof(value) > bar2_size_) {
-    throw std::out_of_range("Write out of bounds of BAR2 memory window.");
-  }
-  volatile uint64_t* addr = static_cast<volatile uint64_t*>(static_cast<void*>(static_cast<char*>(bar2_base_) + offset));
-  *addr = value;
-}
 
-uint64_t QEMUCXLConnector::read_u64(uint64_t offset) {
-  if (bar2_base_ == nullptr) {
-    throw std::runtime_error("BAR2 memory window not set. Call set_memory_window() first.");
-  }
-  if (offset + sizeof(uint64_t) > bar2_size_) {
-    throw std::out_of_range("Read out of bounds of BAR2 memory window.");
-  }
-  volatile uint64_t* addr = static_cast<volatile uint64_t*>(static_cast<void*>(static_cast<char*>(bar2_base_) + offset));
-  return *addr;
+  *base = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(mapping));
 }
 
 std::optional<CXLEventData> QEMUCXLConnector::wait_for_event(int timeout_ms) {
@@ -265,7 +251,7 @@ std::optional<CXLEventData> QEMUCXLConnector::check_for_new_client() {
   CXLEventData event;
   event.type = CXLEvent::NEW_CLIENT_CONNECTED;
   event.connection = std::make_unique<QEMUConnection>(
-    notify.channel_shm_offset,
+    notify.channel_shm_offset, // basically 0?
     notify.channel_shm_size,
     notify.channel_id
   );

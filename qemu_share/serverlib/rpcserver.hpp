@@ -192,17 +192,26 @@ private:
 
 private:
   void handle_new_client(std::unique_ptr<AbstractCXLConnection> conn) {
-    set_memory_window(conn->get_base(), conn->get_size(),
-                      conn->get_channel_id());
+    int bar_idx_ = set_memory_window(conn->get_size(), conn->get_channel_id());
+    if (bar_idx_ == -1) {
+      throw std::runtime_error("Could not acquire BAR for client from channel " + std::to_string(conn->get_channel_id()));
+    }
+    // We do a bit of a dirty hack here for now
+    // we simply obtain the base and size and then update the conn's params
+    uint64_t base;
+    uint64_t size;
+    setup_shared_memory(bar_idx_, &base, &size);
     uint64_t channel_id = conn->get_channel_id();
 
     std::cout << "New client connected with channel ID: "
-              << conn->get_channel_id() << ", Base: " << conn->get_base()
-              << ", Size: " << conn->get_size() << std::endl;
+              << conn->get_channel_id() << ", Base: " << base
+              << ", Size: " << size << std::endl;
 
     clients_[channel_id] =
-        std::thread([this, conn = std::move(conn)]() mutable {
-          this->service_client(std::move(conn));
+        std::thread([this, channel_id, size, base]() mutable {
+          this->service_client(std::make_unique<QEMUConnection>(
+            base, size, channel_id
+          ));
         });
   }
 
@@ -247,8 +256,7 @@ private:
               << connection->get_channel_id() << " with base address "
               << connection->get_base() << " and size "
               << connection->get_size() << std::endl;
-    uint64_t mapped_base =
-        reinterpret_cast<uint64_t>(bar2_base_) + connection->get_base();
+    uint64_t mapped_base = connection->get_base();
     QueueEntry *server_queue = reinterpret_cast<QueueEntry *>(
         mapped_base + DiancieHeap::SERVER_QUEUE_OFFSET);
     QueueEntry *client_queue = reinterpret_cast<QueueEntry *>(

@@ -2,6 +2,7 @@
 #define QEMU_CXL_CONNECTOR_HPP
 
 #include "a_cxl_connector.hpp"
+#include <cstdint>
 #include <string>
 #include <iostream>
 
@@ -40,8 +41,10 @@ protected:
   void *bar1_base_ = nullptr;
   size_t bar1_size_ = 0;
   
-  void *bar2_base_ = nullptr;
-  size_t bar2_size_ = 0;
+  // Is it really an abstraction violation if we expose the void* of the BAR
+  // for the data connection?
+  void *data_bar_base_ = nullptr;
+  size_t data_bar_size_ = 0;
 
 private:
   std::string device_path_;
@@ -76,8 +79,8 @@ protected:
   uint32_t get_notification_status() override;
   void clear_notification_status(uint32_t bits_to_clear);
   // In the impl now, both server/client must configure their QEMU device
-  bool set_memory_window(uint64_t offset, uint64_t size, uint64_t channel_id) override;
-  
+  int set_memory_window(uint64_t size, uint64_t channel_id) override;
+  void setup_shared_memory(int bar_number, uint64_t* base, uint64_t* size);
 
   void write_u64(uint64_t offset, uint64_t value);
   uint64_t read_u64(uint64_t offset);

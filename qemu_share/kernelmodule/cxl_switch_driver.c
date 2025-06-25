@@ -57,64 +57,10 @@ static int device_count = 0;
 #define MMAP_OFFSET_PGOFF_BAR1 1
 #define MMAP_OFFSET_PGOFF_BAR2 2
 
+#define BAR_CONN_BASE          2
+
 // ioctl command definitions
 #include "../includes/ioctl_defs.h"
-
-/**
-    Instead of mapping the entire bar2 to allow a server to service multiple
-    clients concurrently at once, we now provide an anon inode for each shared
-    memory channel for each client connected to the server that the server maps.
-    The server mmaps it and performs ops directly on it.
-*/
-struct cxl_channel_ctx {
-    uint64_t physical_offset;
-    uint64_t size;
-};
-
-/* cxl_channel ops */
-
-static int cxl_channel_mmap(struct file *filp, struct vm_area_struct *vma)
-{
-    struct cxl_channel_ctx *ctx = filp->private_data;
-    unsigned long req_size = vma->vm_end - vma->vm_start;
-    int ret;
-
-    if (!ctx) {
-        pr_err("%s: No channel ctx was found when mmap\n", DRIVER_NAME);
-        return -EINVAL;
-    }
-
-    pr_info("%s: mmap called on channel fd. Mapping phys 0x%llx, size 0x%llx\n", DRIVER_NAME, ctx->physical_offset, ctx->size);
-
-    if (req_size > ctx->size) {
-        pr_err("%s: Requested mmap size (0x%lx) > channel size (0x%llx)\n", DRIVER_NAME, req_size, ctx->size);
-        return -EINVAL;
-    }
-
-    vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-	vm_flags_set(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP | VM_PFNMAP);
-    ret = io_remap_pfn_range(vma, vma->vm_start, ctx->physical_offset >> PAGE_SHIFT, req_size, vma->vm_page_prot);
-
-    if (ret) {
-        pr_err("%s: mmap failed, error=%d\n", DRIVER_NAME, ret);
-        return ret;
-    }
-    return 0;
-}
-
-static int cxl_channel_release(struct inode *inode, struct file *filp)
-{
-    pr_info("%s: Releasing channel file\n", DRIVER_NAME);
-    kfree(filp->private_data);
-    filp->private_data = NULL;
-    return 0;
-}
-
-static const struct file_operations cxl_channel_fops = {
-    .owner = THIS_MODULE,
-    .mmap  = cxl_channel_mmap,
-    .release = cxl_channel_release,
-};
 
 /* Per-device data structure */
 struct cxl_switch_client_dev {
@@ -131,9 +77,12 @@ struct cxl_switch_client_dev {
     resource_size_t bar1_len;
 
     // Bar 2 (Data window)
-    void __iomem *bar2_kva;
-    resource_size_t bar2_start;
-    resource_size_t bar2_len;
+    #define MAX_CONNECTION_BARS 4
+    void __iomem *connection_bar_kva[MAX_CONNECTION_BARS];
+    resource_size_t connection_bar_start[MAX_CONNECTION_BARS];
+    resource_size_t connection_bar_len[MAX_CONNECTION_BARS];
+    uint64_t connection_channel_ids[MAX_CONNECTION_BARS];
+    bool connection_bar_active[MAX_CONNECTION_BARS];
 
 	dev_t devt;              // major/minor number
 	struct cdev c_dev;       // character device structure
@@ -211,11 +160,22 @@ static int cxl_switch_client_mmap(struct file *filp, struct vm_area_struct *vma)
         bar_phys_start = dev->bar1_start;
         bar_len = dev->bar1_len;
         pr_info("%s: Mapping BAR1 for %s\n", DRIVER_NAME, pci_name(dev->pdev));
-    } else if (user_mmap_pgoff == MMAP_OFFSET_PGOFF_BAR2) {
-        selected_bar_idx = 2;
-        bar_phys_start = dev->bar2_start;
-        bar_len = dev->bar2_len;
-        pr_info("%s: Mapping BAR2 for %s\n", DRIVER_NAME, pci_name(dev->pdev));
+    } else if (user_mmap_pgoff >= BAR_CONN_BASE && user_mmap_pgoff <= BAR_CONN_BASE + MAX_CONNECTION_BARS - 1) {
+        int conn_bar_idx = user_mmap_pgoff - BAR_CONN_BASE; // 0-3
+        selected_bar_idx = user_mmap_pgoff;
+
+        // Check if this connection BAR is active
+        if (!dev->connection_bar_active[conn_bar_idx]) {
+            pr_err("%s: Connection BAR%d is not active, cannot mmap\n", DRIVER_NAME, conn_bar_idx);
+            return -ENODEV;
+        }
+
+        bar_phys_start = dev->connection_bar_start[conn_bar_idx];
+        bar_len = dev->connection_bar_len[conn_bar_idx];
+
+        char bar_name[32];
+        snprintf(bar_name, sizeof(bar_name), "Connection BAR%d", conn_bar_idx);
+        pr_info("%s: Mapping %s for %s\n", DRIVER_NAME, bar_name, pci_name(dev->pdev));
     } else {
         pr_err("%s: Invalid mmap offset %lu\n", DRIVER_NAME, user_mmap_pgoff);
         return -EINVAL;
@@ -285,47 +245,8 @@ static long cxl_switch_client_ioctl(struct file *filp, unsigned int cmd, unsigne
     pr_info("%s: Setting eventfd for command ready notifications.\n", DRIVER_NAME);
     break;
   case CXL_SWITCH_IOCTL_MAP_CHANNEL:
-    cxl_channel_map_info_t map_info;
-    struct cxl_channel_ctx *ctx;
-    int new_fd;
-
-    if (copy_from_user(&map_info, (void __user *) arg, sizeof(map_info))) {
-      return -EFAULT;
-    }
-    
-    pr_info("%s: Mapping channel with physical offset 0x%llx, size 0x%llx\n",
-            DRIVER_NAME, map_info.physical_offset, map_info.size);
-    // Allocate a private context for the new file
-    ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
-    if (!ctx) {
-        return -ENOMEM;
-    }
-
-    ctx->physical_offset = map_info.physical_offset;
-    ctx->size = map_info.size;
-    
-    // Spawn a new fd using an anonymous inode which the server
-    // uses to interact with region
-    new_fd = anon_inode_getfd("[cxl_channel]", &cxl_channel_fops, ctx, O_RDWR | O_CLOEXEC);
-
-    if (new_fd < 0) {
-        pr_err("%s: Failed to create anonymous inode for channel, error=%d\n", DRIVER_NAME, new_fd);
-        kfree(ctx);
-        return new_fd;
-    }
-
-    // Return this new fd to the userspace app (server)
-    if (copy_to_user((void __user*) arg, &new_fd, sizeof(new_fd))) {
-        put_unused_fd(new_fd);
-        close_fd(new_fd);
-        return -EFAULT;
-    }
-    pr_info("%s: Successfully created channel fd %d with physical offset 0x%llx, size 0x%llx\n",
-            DRIVER_NAME, new_fd, ctx->physical_offset, ctx->size);
-
-    // target_ctx_ptr remains unassigned, so we essentially
-    // terminate here
-    return 0;
+    pr_info("%s: Deprecated.\n", DRIVER_NAME);
+    break;
   default:
     pr_warn("%s: Unknown ioctl command 0x%x\n", DRIVER_NAME, cmd);
     return -ENOTTY;
@@ -564,8 +485,32 @@ static int cxl_switch_client_pci_probe(struct pci_dev *pdev, const struct pci_de
     ret = map_bar(dev, 1, &dev->bar1_len, &dev->bar1_kva, "BAR1 Control");
     if (ret) goto err_release_bar0;
 
-    ret = probe_bar_start_length(dev, 2, &dev->bar2_start, &dev->bar2_len, "BAR2 Data");
-    if (ret) goto err_release_bar1;
+    // Probe connection BARS but don't map them just yet
+    for (int i = 0; i < MAX_CONNECTION_BARS; i++) {
+        int bar_idx = BAR_CONN_BASE + i;
+        char bar_name[32];
+        snprintf(bar_name, sizeof(bar_name), "BAR%d Connection", bar_idx);
+
+        ret = probe_bar_start_length(dev, 
+            bar_idx,
+            &dev->connection_bar_start[i],
+            &dev->connection_bar_len[i],
+            bar_name
+        );
+
+        if (ret) {
+            pr_warn("%s: Failed to probe %s, error=%d\n", DRIVER_NAME, bar_name, ret);
+            dev->connection_bar_len[i] = 0;
+        } else {
+            dev->connection_bar_active[i] = false; // Not active yet
+            pr_info("%s: %s available at guest_phys 0x%llx, len 0x%llx for %s.\n",
+                    DRIVER_NAME, bar_name,
+                    (unsigned long long)dev->connection_bar_start[i],
+                    (unsigned long long)dev->connection_bar_len[i],
+                    pci_name(pdev));
+        
+        }
+    }
 
     // 5. Setup MSI
     //    Try to allocate one MSI vector
@@ -573,7 +518,7 @@ static int cxl_switch_client_pci_probe(struct pci_dev *pdev, const struct pci_de
     if (nvecs < 0) {
       ret = nvecs;
       pr_err("%s: Failed to allocate MSI vectors for %s, error = %d.\n", DRIVER_NAME, pci_name(pdev), ret);
-      goto err_release_bar2;
+      goto err_release_bar1;
     }
     //    Get IRQ number for 0th allocated vector
     dev->irq = pci_irq_vector(pdev, 0);
@@ -655,9 +600,9 @@ err_free_irq_handler:
     if (dev->irq > 0) free_irq(dev->irq, dev);
 err_free_irq_vectors:
     pci_free_irq_vectors(pdev);
-err_release_bar2:
-    if (dev->bar2_kva) pci_iounmap(pdev, dev->bar2_kva);
-    if (dev->bar2_len) pci_release_region(pdev, 2);
+// err_release_bar2:
+//     if (dev->bar2_kva) pci_iounmap(pdev, dev->bar2_kva);
+//     if (dev->bar2_len) pci_release_region(pdev, 2);
 err_release_bar1:
     if (dev->bar1_kva) pcim_iounmap(pdev, dev->bar1_kva);
     if (dev->bar1_len) pci_release_region(pdev, 1);
@@ -699,8 +644,12 @@ static void cxl_switch_client_pci_remove(struct pci_dev *pdev)
 
     pci_free_irq_vectors(pdev);
 
-    if (dev->bar2_kva) pcim_iounmap(pdev, dev->bar2_kva);
-    if (dev->bar2_len) pci_release_region(pdev, 2);
+    for (int i = 0; i < MAX_CONNECTION_BARS; i++) {
+        if (dev->connection_bar_len[i]) {
+            pci_release_region(pdev, BAR_CONN_BASE + i);
+        }
+    }
+
     if (dev->bar1_kva) pcim_iounmap(pdev, dev->bar1_kva);
     if (dev->bar1_len) pci_release_region(pdev, 1);
     if (dev->bar0_kva) pcim_iounmap(pdev, dev->bar0_kva);

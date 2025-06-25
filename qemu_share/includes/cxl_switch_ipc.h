@@ -39,8 +39,8 @@ typedef enum {
     CXL_MSG_TYPE_RPC_DEREGISTER_SERVICE_REQ = 0x28,
     CXL_MSG_TYPE_RPC_DEREGISTER_SERVICE_RESP = 0x29,
     // Commands handled by QEMU device locally (to configure BAR2)
-    CXL_MSG_TYPE_RPC_SET_BAR2_WINDOW_REQ = 0x30,
-    CXL_MSG_TYPE_RPC_SET_BAR2_WINDOW_RESP = 0x31,
+    CXL_MSG_TYPE_RPC_SET_CONN_BAR_REQ = 0x30,
+    CXL_MSG_TYPE_RPC_SET_CONN_BAR_RESP = 0x31,
     // Generic error for mgmt
     CXL_MSG_TYPE_RPC_MGMT_ERROR_RESP = 0x3F,
 } cxl_ipc_rpc_mgmt_msg_type_t;
@@ -66,7 +66,7 @@ typedef enum {
     CXL_IPC_STATUS_CHANNEL_ALLOC_FAILED = 0x08,
     CXL_IPC_STATUS_SERVER_UNAVAILABLE = 0x09,
     CXL_IPC_STATUS_NOTIFICATION_FAILED = 0x0A,
-    CXL_IPC_STATUS_BAR2_FAILED = 0x0B,
+    CXL_IPC_STATUS_NO_AVAILABLE_BAR = 0x0B,
 } cxl_ipc_status_t;
 
 // Common header for all messages.
@@ -206,15 +206,15 @@ typedef struct {
 // Guest lib <-> QEMU Device mailbox
 typedef struct {
     uint8_t type; 
-    uint64_t offset; 
     uint64_t size;
     uint64_t channel_id; 
-} cxl_ipc_rpc_set_bar2_window_req_t;
+} cxl_ipc_rpc_set_conn_bar_req_t;
 
 typedef struct {
     uint8_t type; 
     uint8_t status;
-} cxl_ipc_rpc_set_bar2_window_resp_t;
+    uint8_t bar_idx;
+} cxl_ipc_rpc_set_conn_bar_resp_t;
 
 // Generic error for RPC management
 typedef struct {

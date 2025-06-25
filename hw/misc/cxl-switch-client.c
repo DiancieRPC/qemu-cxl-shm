@@ -16,6 +16,7 @@
 #include "standard-headers/linux/pci_regs.h"
 #include "system/memory.h"
 #include "system/hostmem.h"
+#include <linux/pci_regs.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -27,7 +28,7 @@
 
 #include "hw/misc/cxl_switch_ipc.h"
 
-#define CXL_SWITCH_DEBUG 0
+#define CXL_SWITCH_DEBUG 1
 #define CXL_SWITCH_DPRINTF(fmt, ...)                       \
     do {                                                   \
         if (CXL_SWITCH_DEBUG) {                            \
@@ -39,7 +40,11 @@
 // --- BAR Sizes and layout ---
 #define BAR0_MAILBOX_SIZE  0x1000    // 4KB for management mailbox
 #define BAR1_CONTROL_SIZE  0x1000    // 4KB for control registers
-#define BAR2_DATA_SIZE     (256 * MiB) // Default size
+#define BAR_DATA_SIZE     (256 * MiB) // Default size
+
+#define BAR_MAILBOX   0
+#define BAR_CONTROL   1
+#define BAR_CONN_BASE 2
 
 // BAR1 Control Registers
 #define REG_COMMAND_DOORBELL 0x00
@@ -90,6 +95,12 @@ typedef struct {
     bool is_active;
 } cxl_channel_map_t;
 
+// Used to keep track of which mem ops is referencing which data bar
+// by making use of opaque in the memory_region_init_io method
+typedef struct BarContext {
+    CXLSwitchClientState *dev;
+    int bar_index;
+} BarContext_t;
 
 struct CXLSwitchClientState {
     PCIDevice pdev;
@@ -113,96 +124,30 @@ struct CXLSwitchClientState {
     uint32_t interrupt_mask_reg;
     uint32_t interrupt_status_reg;
 
-    /**
-        This is a hacky attempt at a Dynamic Capacity Device.
-        When a PCIe device is configured, the enumeration process requires
-        the PCIe device to report the characteristics of its BARs to the host
-        system. This includes the type of resource (memory or I/O), whether
-        it's 64 bit prefetchable, and importantly, the size of the memory region
-        it requires. The host then allocates a physical address range in the
-        system's memory map for this BAR and programs the BAR register on the
-        PCI device with the allocated base address.
-        Since QEMU adheres to this model, we have no choice but to present this
-        static size.
-        In our case, our CXL Switch Client wants to request for a shared region
-        of the total CXL memory pooling (which is for the RPC connection). This
-        is handled via the RPC_SET_BAR2_WINDOW_REQ command. This returns the
-        Bar2 window offset and size, which is later referenced by the 
-        memory operations on the bar2.
-        TODO: Align this with an actual DCD and how CXL presents itself. 
-        I am unsure how much engineering effort this will require, hence 
-        sticking to the hack for now, but the effort does seem to be a lot,
-        given that it took moking sometime to get right.
-        Re: https://github.com/moking/qemu/tree/dcd-v6
-    */
-    MemoryRegion bar2_data_region;
-    uint64_t bar2_data_size;           // Actual size of BAR2
-    uint64_t bar2_data_window_offset;  // Offset in the global pool
-    uint64_t bar2_data_window_size;    // Size that the window is configured
 
-    // Dirty hack to map channel_id
-    cxl_channel_map_t channel_map[MAX_CONCURRENT_CHANNELS];
+    /**
+        Each PCI device can only have up to 6 BARs.
+        A 64 bit address BAR takes 2 BARs.
+        So if you map BAR0,1 as 32 bits, and BAR2 is 64 bit, then BAR3 is used
+        to support BAR2.
+        So we only have space for 2 data BARs essentially.
+        And we must map them in increments of 2.
+        We only have BAR2 and BAR4 for data so we can only service 2 clients
+        at once with this emulation.
+    */
+    #define MAX_CONNECTION_BARS 2
+    MemoryRegion connection_bars[MAX_CONNECTION_BARS];
+    uint64_t connection_sizes[MAX_CONNECTION_BARS];
+    uint64_t connection_channel_ids[MAX_CONNECTION_BARS];
+    bool connection_active[MAX_CONNECTION_BARS];
 
     uint64_t total_pool_size;          // Total size of mem pool
-
     char *server_socket_path;  // QOM property
     int server_fd;
     QemuMutex lock; // Serialize access to server_fd from MMIO callbacks
 };
 
-bool register_new_channel(uint64_t offset, uint64_t size, uint64_t channel_id, CXLSwitchClientState *s);
-bool deregister_channel(uint64_t channel_id, CXLSwitchClientState *s);
-
-int get_channel_id_for_address(uint64_t address, CXLSwitchClientState *s);
-
-// Gotta deregister too somehow, shud be done in cleanup too
-bool register_new_channel(uint64_t offset, uint64_t size, uint64_t channel_id, CXLSwitchClientState *s)
-{
-    // Check if we can register a new channel
-    for (int i = 0; i < MAX_CONCURRENT_CHANNELS; i++) {
-        if (!s->channel_map[i].is_active) {
-            s->channel_map[i].channel_base_offset = offset;
-            s->channel_map[i].channel_size = size;
-            s->channel_map[i].channel_id = channel_id;
-            s->channel_map[i].is_active = true;
-            CXL_SWITCH_DPRINTF("Registered new channel mapping - ID: %lu, Offset: 0x%lx, Size: 0x%lx\n",
-                              channel_id, offset, size);
-            return true;
-        }
-    }
-    CXL_SWITCH_DPRINTF("No available slots for new channel.\n");
-    return false;
-}
-
-bool deregister_channel(uint64_t channel_id, CXLSwitchClientState *s)
-{
-    for (int i = 0; i < MAX_CONCURRENT_CHANNELS; i++) {
-        if (s->channel_map[i].is_active && s->channel_map[i].channel_id == channel_id) {
-            s->channel_map[i].is_active = false;
-            CXL_SWITCH_DPRINTF("Deregistered channel ID %lu\n", channel_id);
-            return true;
-        }
-    }
-    CXL_SWITCH_DPRINTF("Channel ID %lu not found for deregistration\n", channel_id);
-    return false;
-}
-
-
-int get_channel_id_for_address(uint64_t address, CXLSwitchClientState *s)
-{
-    for (int i = 0; i < MAX_CONCURRENT_CHANNELS; i++) {
-        if (s->channel_map[i].is_active &&
-            address >= s->channel_map[i].channel_base_offset &&
-            address < (s->channel_map[i].channel_base_offset + s->channel_map[i].channel_size)) {
-            CXL_SWITCH_DPRINTF("Found channel for address 0x%lx: Channel ID %lu\n",
-                              address, s->channel_map[i].channel_id);
-            return i;
-        }
-    }
-    CXL_SWITCH_DPRINTF("No channel found for address 0x%lx\n", address);
-    return -1;
-
-}
+void cleanup_channel(CXLSwitchClientState *s, uint64_t channel_idx);
 
 // --- Forward declarations for MSI ---
 static void cxl_server_fd_read_handler(void *opaque);
@@ -213,8 +158,8 @@ static uint64_t bar0_mailbox_read(void *opaque, hwaddr addr, unsigned size);
 static void bar0_mailbox_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
 static uint64_t bar1_control_read(void *opaque, hwaddr addr, unsigned size);
 static void bar1_control_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
-static uint64_t bar2_data_window_read(void *opaque, hwaddr addr, unsigned size);
-static void bar2_data_window_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
+static uint64_t bar_data_window_read(void *opaque, hwaddr addr, unsigned size);
+static void bar_data_window_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
 
 // --- MemoryRegionOps definitions ---
 static const MemoryRegionOps bar0_mailbox_ops = {
@@ -237,15 +182,31 @@ static const MemoryRegionOps bar1_control_ops = {
     },
 };
 
-static const MemoryRegionOps bar2_data_ops = {
-    .read = bar2_data_window_read,
-    .write = bar2_data_window_write,
+static const MemoryRegionOps bar_data_ops = {
+    .read = bar_data_window_read,
+    .write = bar_data_window_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .impl = {
         .min_access_size = 1,
         .max_access_size = 8,
     },
 };
+
+void cleanup_channel(CXLSwitchClientState *s, uint64_t channel_idx) {
+    // Find the BAR in charge of the current channel
+    int bar_idx = -1;
+    for (int i = 0; i < MAX_CONNECTION_BARS; i++) {
+        if (s->connection_channel_ids[i] == channel_idx) {
+            bar_idx = i;
+            break;
+        }
+    }
+    // No failure op here, just clean up
+    if (bar_idx != -1) {
+        s->connection_active[bar_idx] = false;
+        s->connection_channel_ids[bar_idx] = 0;
+    }
+}
 
 static void pci_cxl_switch_client_register_types(void);
 static void cxl_switch_client_instance_init(Object *obj);
@@ -409,36 +370,49 @@ static void bar1_control_write(void *opaque, hwaddr addr, uint64_t val, unsigned
                     expected_server_resp_len = sizeof(cxl_ipc_rpc_release_channel_resp_t);
                     // Cleanup mapping here too
                     cxl_ipc_rpc_release_channel_req_t *rel_req = (cxl_ipc_rpc_release_channel_req_t *)s->bar0_mailbox;
-                    deregister_channel(rel_req->channel_id, s);
+                    cleanup_channel(s, rel_req->channel_id);
                     CXL_SWITCH_DPRINTF("Info: Handling RPC_RELEASE_CHANNEL request.\n");
                     ipc_ret = cxl_switch_client_ipc_request_response(s, s->bar0_mailbox, sizeof(cxl_ipc_rpc_release_channel_req_t), ipc_server_resp_payload, expected_server_resp_len);
                     break;
                 
-                case CXL_MSG_TYPE_RPC_SET_BAR2_WINDOW_REQ: {
+                case CXL_MSG_TYPE_RPC_SET_CONN_BAR_REQ: {
                     // Local QEMU Device command
-                    cxl_ipc_rpc_set_bar2_window_req_t *set_window_req = (cxl_ipc_rpc_set_bar2_window_req_t *)s->bar0_mailbox;
-                    cxl_ipc_rpc_set_bar2_window_resp_t set_window_resp;
-                    set_window_resp.type = CXL_MSG_TYPE_RPC_SET_BAR2_WINDOW_RESP;
+                    cxl_ipc_rpc_set_conn_bar_req_t *set_conn_req = (cxl_ipc_rpc_set_conn_bar_req_t *)s->bar0_mailbox;
+                    cxl_ipc_rpc_set_conn_bar_resp_t set_conn_resp;
+                    set_conn_resp.type = CXL_MSG_TYPE_RPC_SET_CONN_BAR_RESP;
             
-                    CXL_SWITCH_DPRINTF("Info: Handling RPC_SET_BAR2_WINDOW request. Offset=0x%"PRIx64", Size=0x%"PRIx64"\n",
-                                    set_window_req->offset, set_window_req->size);
+                    CXL_SWITCH_DPRINTF("Info: Handling RPC_SET_CONN_BAR request. Offset=0x%"PRIx64", Size=0x%"PRIx64"\n",
+                                    set_conn_req->offset, set_conn_req->size);
                     
-                    if (set_window_req->size <= s->bar2_data_size && (set_window_req->offset + set_window_req->size) <= s->total_pool_size) {
-                        s->bar2_data_window_offset = set_window_req->offset;
-                        s->bar2_data_window_size = set_window_req->size;
-                        set_window_resp.status = CXL_IPC_STATUS_OK;
-                        register_new_channel(set_window_req->offset, set_window_req->size, set_window_req->channel_id, s);
-                        CXL_SWITCH_DPRINTF("Info: BAR2 window set successfully. Offset=0x%"PRIx64", Size=0x%"PRIx64"\n",
-                                        s->bar2_data_window_offset, s->bar2_data_window_size);
-                    } else {
-                        set_window_resp.status = CXL_IPC_STATUS_BAR2_FAILED;
-                        CXL_SWITCH_DPRINTF("Error: Invalid BAR2 window configuration. Offset=0x%"PRIx64", Size=0x%"PRIx64"\n",
-                                        set_window_req->offset, set_window_req->size);
+                    // Find an available connection BAR
+                    int available_bar = -1;
+                    for (int i = 0; i < MAX_CONNECTION_BARS; i++) {
+                        if (!s->connection_active[i]) {
+                            available_bar = i;
+                            break;
+                        }
                     }
+
+                    if (available_bar == -1) {
+                        set_conn_resp.status = CXL_IPC_STATUS_NO_AVAILABLE_BAR;
+                        set_conn_resp.bar_idx = 0; // Pointless
+                    } else {
+                        // Configure the BAR for this connection
+                        s->connection_sizes[available_bar] = set_conn_req->size;
+                        s->connection_channel_ids[available_bar] = set_conn_req->channel_id;
+                        s->connection_active[available_bar] = true;
+
+                        set_conn_resp.status = CXL_IPC_STATUS_OK;
+                        set_conn_resp.bar_idx = BAR_CONN_BASE + available_bar;
+
+                        CXL_SWITCH_DPRINTF("Info: Configured connection BAR %d with ID 0x%"PRIx64", Size=0x%"PRIx64"\n",
+                                        available_bar, set_conn_req->channel_id, set_conn_req->size);
+                    }
+
                     // Write response to bar0 mailbox
-                    memcpy(s->bar0_mailbox, &set_window_resp, sizeof(set_window_resp));
+                    memcpy(s->bar0_mailbox, &set_conn_resp, sizeof(set_conn_resp));
                     ipc_ret = 0; // No IPC request needed, handled locally
-                    tmp_status = set_window_resp.status;
+                    tmp_status = set_conn_resp.status;
                     expected_server_resp_len = 0; // no server payload
                     break;
                 default:
@@ -508,19 +482,24 @@ cmd_done_unlock_no_msi:
 
 // --- BAR2 Replicated Memory Operations ---
 
-static uint64_t bar2_data_window_read(void *opaque, hwaddr addr, unsigned size)
+static uint64_t bar_data_window_read(void *opaque, hwaddr addr, unsigned size)
 {
-    CXLSwitchClientState *s = opaque;
+    BarContext_t *ctx = (BarContext_t *) opaque;
+    CXLSwitchClientState *s = ctx->dev;
+    int bar_idx = ctx->bar_index;
+    
     uint64_t data = ~0ULL; // Default error value (all FFs)
 
-    if (s->bar2_data_window_size == 0) {
+    uint64_t channel_id = s->connection_channel_ids[bar_idx];
+
+    if (s->connection_active[bar_idx] == 0) {
         CXL_SWITCH_DPRINTF("Error: BAR2 data window not configured.\n");
         return data;
     }
 
-    if ((addr + size) > s->bar2_data_window_size) {
+    if ((addr + size) > s->connection_sizes[bar_idx]) {
         CXL_SWITCH_DPRINTF("GuestError: Read out of bounds (offset=0x%"PRIx64", size=%u, limit=0x%"PRIx64")\n",
-                      addr, size, s->bar2_data_window_size);
+                      addr, size, s->connection_sizes[bar_idx]);
         return data;
     }
     
@@ -529,18 +508,9 @@ static uint64_t bar2_data_window_read(void *opaque, hwaddr addr, unsigned size)
         return data;
     }
 
-    int channel_map_idx = get_channel_id_for_address(addr, s);
-    if (channel_map_idx == -1) {
-        CXL_SWITCH_DPRINTF("Error: Channel mapping was not established.\n");
-        return data;
-    }
-
-    uint64_t channel_id = s->channel_map[channel_map_idx].channel_id;
-
-    hwaddr addr_in_pool = s->bar2_data_window_offset + addr;
     cxl_ipc_read_req_t read_req = {
         .type = CXL_MSG_TYPE_READ_REQ,
-        .addr = addr_in_pool,
+        .addr = addr,
         .size = (uint8_t) size,
         .channel_id = channel_id,
     };
@@ -564,18 +534,22 @@ static uint64_t bar2_data_window_read(void *opaque, hwaddr addr, unsigned size)
     return read_resp.value;
 }
 
-static void bar2_data_window_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
+static void bar_data_window_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
-    CXLSwitchClientState *s = opaque;
+    BarContext_t *ctx = (BarContext_t *) opaque;
+    CXLSwitchClientState *s = ctx->dev;
+    int bar_idx = ctx->bar_index;
 
-    if (s->bar2_data_window_size == 0) {
+    uint64_t channel_id = s->connection_channel_ids[bar_idx];
+
+    if (s->connection_active[bar_idx] == 0) {
         CXL_SWITCH_DPRINTF("Error: BAR2 data window not configured.\n");
         return;
     }
 
-    if ((addr + size) > s->bar2_data_window_size) {
+    if ((addr + size) > s->connection_sizes[bar_idx]) {
         CXL_SWITCH_DPRINTF("GuestError: Write out of bounds (offset=0x%"PRIx64", size=%u, limit=0x%"PRIx64")\n",
-                      addr, size, s->bar2_data_window_size);
+                      addr, size, s->connection_sizes[bar_idx]);
         return;
     }
 
@@ -584,18 +558,9 @@ static void bar2_data_window_write(void *opaque, hwaddr addr, uint64_t val, unsi
         return;
     }
 
-    int channel_map_idx = get_channel_id_for_address(addr, s);
-    if (channel_map_idx == -1) {
-        CXL_SWITCH_DPRINTF("Error: Channel mapping was not established.\n");
-        return;
-    }
-
-    uint64_t channel_id = s->channel_map[channel_map_idx].channel_id;
-
-    hwaddr addr_in_pool = s->bar2_data_window_offset + addr;
     cxl_ipc_write_req_t write_req = {
         .type  = CXL_MSG_TYPE_WRITE_REQ,
-        .addr  = addr_in_pool,
+        .addr  = addr,
         .size  = (uint8_t) size,
         .value = val,
         .channel_id = channel_id,
@@ -708,7 +673,7 @@ static void cxl_server_fd_read_handler(void *opaque)
             s->notif_status_reg = NOTIF_STATUS_CHANNEL_CLOSED;
             s->interrupt_status_reg |= IRQ_SOURCE_CLOSE_CHANNEL_NOTIFY;
             triggers_msi = true;
-            deregister_channel(close_notify_payload.channel_id, s);
+            cleanup_channel(s, close_notify_payload.channel_id);
         } else {
             CXL_SWITCH_DPRINTF("Error: Failed to read CLOSE_CHANNEL_NOTIFY payload. Expected %zu bytes, got %zd.\n", sizeof(close_notify_payload), n);
             // Close the handler else there has been some srs issue
@@ -746,9 +711,6 @@ static void pci_cxl_switch_client_realize(PCIDevice *pdev, Error **errp)
     s->interrupt_mask_reg = 0; // All interrupts are masked by default
     s->interrupt_status_reg = 0; // No interrupts pending
     memset(s->bar0_mailbox, 0, BAR0_MAILBOX_SIZE);
-    s->bar2_data_window_offset = 0;
-    s->bar2_data_window_size = BAR2_DATA_SIZE;
-    s->bar2_data_size = BAR2_DATA_SIZE; // Default size, can be overridden by QOM property
 
     qemu_mutex_init(&s->lock);
 
@@ -817,10 +779,22 @@ static void pci_cxl_switch_client_realize(PCIDevice *pdev, Error **errp)
     pci_register_bar(pdev, 1, PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_32, &s->bar1_control_region);
     CXL_SWITCH_DPRINTF("Info: BAR1 (control) registered, size %u bytes.\n", BAR1_CONTROL_SIZE);
 
-    // Bar2: Data region
-    memory_region_init_io(&s->bar2_data_region, OBJECT(s), &bar2_data_ops, s, "cxl-switch-client-bar2-data", s->bar2_data_size);
-    pci_register_bar(pdev, 2, PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64 | PCI_BASE_ADDRESS_MEM_PREFETCH, &s->bar2_data_region);
-    CXL_SWITCH_DPRINTF("Info: BAR2 (data) registered, size %"PRIu64" bytes.\n", s->bar2_data_size);
+    // Pre-register connection BARS
+    for (int i = 0; i < MAX_CONNECTION_BARS; i++) {
+        // Create context - passed into opaque to retrieve device and bar idx
+        struct BarContext *ctx = g_malloc(sizeof(struct BarContext));
+        ctx->dev = s;
+        ctx->bar_index = i;
+
+        char bar_name[64];
+        snprintf(bar_name, sizeof(bar_name), "cxl-switch-client-conn-bar%d", i + BAR_CONN_BASE);
+        // Initialize with default size, reconfigure per connection
+        memory_region_init_io(&s->connection_bars[i], OBJECT(s), &bar_data_ops, ctx, bar_name, BAR_DATA_SIZE);
+        pci_register_bar(pdev, 2+i, PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64 | PCI_BASE_ADDRESS_MEM_PREFETCH, &s->connection_bars[i]);
+        
+        s->connection_active[i] = false;
+        CXL_SWITCH_DPRINTF("Info: Connection BAR%d registered.\n", i + BAR_CONN_BASE);
+    }
 
     CXL_SWITCH_DPRINTF("Info: CXL Switch Client (%s) realized successfully.\n",
                   object_get_canonical_path_component(OBJECT(s)));
@@ -889,9 +863,11 @@ static void cxl_switch_client_instance_init(Object *obj)
     s->interrupt_mask_reg = 0; // All interrupts are masked by default
     s->interrupt_status_reg = 0; // No interrupts pending
     memset(s->bar0_mailbox, 0, BAR0_MAILBOX_SIZE);
-    s->bar2_data_size = BAR2_DATA_SIZE;
-    s->bar2_data_window_offset = 0;
-    s->bar2_data_window_size = 0;
+    for (int i = 0; i < MAX_CONNECTION_BARS; i++) {
+        s->connection_sizes[i] = BAR_DATA_SIZE;
+        s->connection_active[i] = false;
+        s->connection_channel_ids[i] = 0;
+    }
 }
 
 static InterfaceInfo interfaces[] = {
