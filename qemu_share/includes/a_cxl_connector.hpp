@@ -114,16 +114,15 @@ public:
   // Each queue entry is 64 bits, or 8 bytes.
   static constexpr int NUM_QUEUE_ENTRIES = 128;
   // 64 bits can identify 2**64 queue entries
-  static constexpr uint64_t CLIENT_QUEUE_POSITION = 0; // Position for client queue
-  static constexpr uint64_t SERVER_QUEUE_POSITION = 8; // Position for server queue
+  static constexpr uint64_t QUEUE_POSITION = 0; // Position for client/server queue
 
-  static constexpr uint64_t CLIENT_QUEUE_OFFSET = 16; // after server queue
+  static constexpr uint64_t CLIENT_QUEUE_OFFSET = 8; // after queue position
   static constexpr size_t   CLIENT_QUEUE_SIZE   = NUM_QUEUE_ENTRIES * 8;
 
-  static constexpr uint64_t SERVER_QUEUE_OFFSET = 16 + CLIENT_QUEUE_SIZE;
+  static constexpr uint64_t SERVER_QUEUE_OFFSET = CLIENT_QUEUE_OFFSET + CLIENT_QUEUE_SIZE;
   static constexpr uint64_t SERVER_QUEUE_SIZE   = NUM_QUEUE_ENTRIES * 8;
 
-  static constexpr uint64_t DATA_AREA_OFFSET    = 16 + CLIENT_QUEUE_SIZE + SERVER_QUEUE_SIZE;
+  static constexpr uint64_t DATA_AREA_OFFSET    = CLIENT_QUEUE_OFFSET + CLIENT_QUEUE_SIZE + SERVER_QUEUE_SIZE;
 
   size_t size;
   uint64_t DATA_AREA_SIZE    = size - CLIENT_QUEUE_SIZE + SERVER_QUEUE_SIZE;
