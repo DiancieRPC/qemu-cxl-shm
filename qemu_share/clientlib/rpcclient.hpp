@@ -56,10 +56,12 @@ private:
   QueueEntry *client_queue_;
   QueueEntry *server_queue_;
   uint64_t data_area_;
-
-  uint64_t client_queue_offset_ = 0;
-  uint64_t server_queue_offset_ = 0;
+  // We only need one queue offset for both queues
+  // Our RPC system is synchronous: there only ever
+  uint64_t queue_offset_ = 0;
   uint64_t next_data_offset_ = 0;
+  // How to interpret the commit flag
+  bool commit_flag_ = true;
 
 public:
   DiancieClient() = delete;
@@ -171,11 +173,11 @@ public:
                 << " (size: " << result_size << " bytes)" << std::endl;
     }
     // Write the address to server queue: Recall that this is relative offset
-    client_queue_[client_queue_offset_].set_address(next_data_offset_);
-    client_queue_[client_queue_offset_].set_flag(true); // signals the server
-    std::cout << "Request queued at " << client_queue_offset_ << std::endl;
+    client_queue_[queue_offset_].set_address(next_data_offset_);
+    client_queue_[queue_offset_].set_flag(commit_flag_); // signals the server
+    std::cout << "Request queued at " << queue_offset_ << std::endl;
     // Wait for server's response: This is blocking as we only adopt sync model
-    while (server_queue_[server_queue_offset_].get_flag() == 0) {
+    while (server_queue_[queue_offset_].get_flag() != commit_flag_) {
       // TODO: Optimize polling
       std::this_thread::sleep_for(std::chrono::microseconds(100000));
     }
@@ -184,11 +186,8 @@ public:
     next_data_offset_ += total_size;
     // // Align to 8-byte boundary
     next_data_offset_ = (next_data_offset_ + 7) & ~7ULL;
-
-    client_queue_offset_ =
-        (client_queue_offset_ + 1) % DiancieHeap::NUM_QUEUE_ENTRIES;
-    server_queue_offset_ =
-        (server_queue_offset_ + 1) % DiancieHeap::NUM_QUEUE_ENTRIES;
+    queue_offset_ = (queue_offset_ + 1) % DiancieHeap::NUM_QUEUE_ENTRIES;
+    if (queue_offset_ == 0) commit_flag_ = !commit_flag_;
 
     if constexpr (!std::is_void_v<RetType>) {
       RetType *result_ptr = reinterpret_cast<RetType *>(result_region);

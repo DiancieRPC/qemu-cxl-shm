@@ -275,8 +275,7 @@ private:
               << connection->get_size() << std::endl;
     volatile uint64_t mapped_base =
         reinterpret_cast<uint64_t>(bar2_base_) + mmio_offset;
-    volatile uint64_t* client_q_posn = reinterpret_cast<volatile uint64_t*>(mapped_base + DiancieHeap::CLIENT_QUEUE_POSITION);
-    volatile uint64_t* server_q_posn = reinterpret_cast<volatile uint64_t*>(mapped_base + DiancieHeap::SERVER_QUEUE_POSITION);
+    volatile uint64_t* q_posn = reinterpret_cast<volatile uint64_t*>(mapped_base + DiancieHeap::QUEUE_POSITION);
     QueueEntry *server_queue = reinterpret_cast<QueueEntry *>(
         mapped_base + DiancieHeap::SERVER_QUEUE_OFFSET);
     QueueEntry *client_queue = reinterpret_cast<QueueEntry *>(
@@ -285,20 +284,24 @@ private:
     // When a server freshly picks up the service_client connection, whether brand
     // new or recover, we read the q_posn from the shm region, which is updated
     // by the server. The client always maintains a local copy.
-    volatile uint64_t server_offset = *server_q_posn;
-    volatile uint64_t client_offset = *client_q_posn;
+    // q_offset is a generational counter
+    volatile uint64_t q_offset = *q_posn;
     // Invariant: they only differ by 1 position at most. We assume a strict
     //            synchronous execution.
     // TODO: How to handle wrap around? Not realistic to assume only 128 RPC
     //       requests per connection.
+    // We use the raw value of the gc to determine the commit flag
+    bool commit_flag = !((q_offset / DiancieHeap::NUM_QUEUE_ENTRIES) % 2);
+    // We modulo it to index into queue
+    volatile uint64_t offset = q_offset % DiancieHeap::NUM_QUEUE_ENTRIES;
+    
     while (true) {
       // TODO: Do optimized polling
-      while (client_queue[client_offset].get_flag() == 0) {
-        std::cout << "Server poll failed, sleeping." << std::endl;
+      while (client_queue[offset].get_flag() != commit_flag) {
         std::this_thread::sleep_for(std::chrono::microseconds(100000));
       }
       // Get offset and abs addr from curr queue entry
-      uint64_t request_offset = client_queue[client_offset].get_address();
+      uint64_t request_offset = client_queue[offset].get_address();
       uint64_t request_addr = request_offset + data_area;
 
       try {
@@ -346,9 +349,9 @@ private:
         func_info.handler(args_region, results_region);
         std::cout << "Handler completed successfully " << std::endl;
         // Set results region for client to read from
-        server_queue[server_offset].set_address(result_offset);
+        server_queue[offset].set_address(result_offset);
         // Commits request
-        server_queue[server_offset].set_flag(true);
+        server_queue[offset].set_flag(commit_flag);
         // After the server has committed its response, it is safe to update
         // the server offset in the shm region.
         // We only consider the server failure for a recovery: if the client fails
@@ -358,13 +361,13 @@ private:
         // server failure for recovery. If server failed and another took over,
         // we want to look at the latest client request, which is what we wrote.
         // The client offset is local as well.
-
-        client_offset = (client_offset + 1) % DiancieHeap::NUM_QUEUE_ENTRIES;
-        *client_q_posn = client_offset;
-        server_offset = (server_offset + 1) % DiancieHeap::NUM_QUEUE_ENTRIES;
-        *server_q_posn = server_offset;
+        offset = (offset + 1) % DiancieHeap::NUM_QUEUE_ENTRIES;
+        *q_posn++;
+        if (offset == 0) {
+          commit_flag = !commit_flag;
+          std::cout << "Flipping commit flag to " << commit_flag << std::endl; 
+        }
         std::cout << "Processing complete. " << std::endl;
-
       } catch (const std::invalid_argument &e) {
         std::cerr << "Thread loop: Invalid argument " << e.what() << std::endl;
       } catch (const std::exception& e) {
