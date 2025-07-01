@@ -1,6 +1,7 @@
 #ifndef MMIO_SAFE_HPP
 #define MMIO_SAFE_HPP
 
+#include <tuple>
 #include <cstring>
 #include <type_traits>
 namespace diancie {
