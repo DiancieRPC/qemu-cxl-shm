@@ -156,9 +156,7 @@ public:
     // Write function ID
     *func_id_ptr = func_id;
     // Write arguments directly
-    ArgsTuple args_tuple = std::make_tuple(std::forward<Args>(args)...);
-    // mmio_write(reinterpret_cast<volatile ArgsTuple*>(args_region), args_tuple);
-    *reinterpret_cast<ArgsTuple *>(args_region) = args_tuple;
+    write_args(args_region, std::forward<Args>(args)...);
 
     std::cout << "Memory layout:" << std::endl;
     std::cout << "  Function ID at: 0x" << std::hex << request_base << std::dec
@@ -190,11 +188,7 @@ public:
     if (queue_offset_ == 0) commit_flag_ = !commit_flag_;
 
     if constexpr (!std::is_void_v<RetType>) {
-      RetType *result_ptr = reinterpret_cast<RetType *>(result_region);
-      std::cout << "Address of ret is " << result_ptr << std::endl;
-      return *result_ptr;
-      // RetType ret = mmio_read<RetType>(reinterpret_cast<volatile RetType*>(result_region));
-      // return ret;
+      return mmio_read<RetType>(result_region);
     }
   }
 
@@ -208,6 +202,13 @@ public:
   ClientState get_state() const { return client_state_.load(); }
 
 private:
+
+  template<typename... Args>
+  void write_args(void* region, Args&&... args) {
+    size_t offset = 0;
+    ((mmio_write(static_cast<char*>(region)+offset, args), offset += sizeof(std::decay_t<Args>)), ...);
+  }
+
   // Setup and cleanup
   // Methods that are called by ctor and dtor
   // Find a service via the FM and request a comms channel
