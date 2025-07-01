@@ -20,6 +20,6 @@ enum class TestCopyFunctions : uint64_t {
 
 using tracked_int = diancie::CounterWrapper<int>;
 
-DEFINE_DIANCIE_FUNCTION(TestCopyFunctions, ADD, tracked_int, tracked_int);
+DEFINE_DIANCIE_FUNCTION(TestCopyFunctions, ADD, tracked_int, tracked_int, tracked_int);
 
 #endif

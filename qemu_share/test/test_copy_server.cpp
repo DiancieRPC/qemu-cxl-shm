@@ -11,11 +11,12 @@
 using namespace diancie;
 
 // Business logic functions - work directly with shared memory
-tracked_int add_impl(tracked_int &a) {
-  std::cout << "Server: Adding " << a.get() << " (zero-copy)" << std::endl;
+tracked_int add_impl(tracked_int &a, tracked_int &b) {
+  std::cout << "Server: Adding " << a.get() << " and " << b.get() << " (zero-copy)" << std::endl;
   a.printStats();
+  b.printStats();
   std::cout << "a is at address " << &a << std::endl;
-  tracked_int result {a.get() + 1};
+  tracked_int result {a.get() + b.get()};
   std::cout << "Server: Result = " << result.get() << std::endl;
   return result;
 }

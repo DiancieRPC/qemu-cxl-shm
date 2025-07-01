@@ -21,21 +21,24 @@ void test_basic_arithmetic(DiancieClient<TestCopyFunctions>& client) {
         int num_add_iterations = 1;
         for (int i = 0; i < num_add_iterations; ++i) {
             int a = int_dist(gen);
-            tracked_int ti {a};
-            int expected_result = a + 1;
+            int b = int_dist(gen);
+            tracked_int ti1 {a};
+            tracked_int ti2 {b};
+            int expected_result = a + b;
             
             // Call the ADD function
-            std::cout << " a " << a << std::endl;
-            tracked_int result = client.call<TestCopyFunctions::ADD>(ti);
-            std::cout << "Client: " << a << " + 1" << " = " << result.get() << std::endl;
+            std::cout << " a " << a << " b " << b << std::endl;
+            tracked_int result = client.call<TestCopyFunctions::ADD>(ti1, ti2);
+            std::cout << "Client: " << a << " + " << b << " = " << result.get() << std::endl;
 
             
             // Check if the result is as expected
             assert(result.get() == expected_result);
             // sleep(1);
-            std::cout << " ti " << std::endl;
-            ti.printStats();
-
+            std::cout << " ti1 " << std::endl;
+            ti1.printStats();
+            std::cout << " ti2 " << std::endl;
+            ti2.printStats();
             std::cout << " result " << std::endl;
             result.printStats();
         }
