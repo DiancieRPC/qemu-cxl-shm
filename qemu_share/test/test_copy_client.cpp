@@ -53,24 +53,34 @@ void test_basic_arithmetic(DiancieClient<TestCopyFunctions>& client) {
 
 void test_basic_shm(DiancieClient<TestCopyFunctions>& client) {
     std::cout << "\n=== Testing Shared Memory Operations ===" << std::endl;
-
+    
     try {
-        auto person = client.shm_new_<tracked_person>();
-        person->get().age = 25;
-        person->get().salary = 100;
-        person->get().kill_count = 0;
-
-        std::cout << "Created person on shm at " << &person << std::endl;
-
-        client.call<TestCopyFunctions::PROCESS_PERSON>(person);
         
-        assert(person->get().age == 26);
-        assert(person->get().salary == 200);
-        assert(person->get().kill_count == 1);
+        std::cout << "\n=== Testing shm person ===" << std::endl;
 
-        person->printStats();
+        auto shm_person = client.shm_new_<Person>();
+        shm_person->age = 25;
+        shm_person->salary = 100;
+        shm_person->kill_count = 0;
 
-        std::cout << "Referred person on shm at " << &person << std::endl;
+        std::cout << "Created person on shm at " << &shm_person << std::endl;
+
+        client.call<TestCopyFunctions::PROCESS_SHM_PERSON>(shm_person);
+        
+        assert(shm_person->age == 26);
+        assert(shm_person->salary == 200);
+        assert(shm_person->kill_count == 1);
+
+        std::cout << "Referred person on shm at " << &shm_person << std::endl;
+        Person person{.age=25, .salary=100, .kill_count=0};
+        std::cout << "Created person at " << &person << std::endl;
+        person = client.call<TestCopyFunctions::PROCESS_PERSON>(person);
+
+        assert(person.age == 26);
+        assert(person.salary == 200);
+        assert(person.kill_count == 1);
+
+        std::cout << "\n=== Testing shm person ===" << std::endl;
 
         std::cout << "✓ Shared memory operations tests passed!" << std::endl;
         

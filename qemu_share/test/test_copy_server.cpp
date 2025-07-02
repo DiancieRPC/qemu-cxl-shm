@@ -22,12 +22,21 @@ tracked_int add_impl(tracked_int &a, tracked_int &b) {
   return result;
 }
 
-void process_person(global_ptr<tracked_person> &person) {
-  std::cout << "Person addr is at " << &person->get() << std::endl;
-  person->get().age+=1;
-  person->get().salary+=100;
-  person->get().kill_count+=1;
-  person->printStats();
+// Copy from local to remote
+Person process_person(Person &person) {
+  std::cout << "Person addr is at " << &person << std::endl;
+  person.age+=1;
+  person.salary+=100;
+  person.kill_count+=1;
+  return person;
+}
+
+// Data already remote
+void process_shm_person(global_ptr<Person> &person) {
+  std::cout << "Person addr is at " << &person << std::endl;
+  person->age+=1;
+  person->salary+=100;
+  person->kill_count+=1;
 }
 
 int main(int argc, char *argv[]) {
@@ -43,6 +52,7 @@ int main(int argc, char *argv[]) {
 
     server.register_rpc_function<TestCopyFunctions::ADD>(add_impl);
     server.register_rpc_function<TestCopyFunctions::PROCESS_PERSON>(process_person);
+    server.register_rpc_function<TestCopyFunctions::PROCESS_SHM_PERSON>(process_shm_person);
 
     std::cout << "\n=== Registering Service ===" << std::endl;
     if (!server.register_service()) {
