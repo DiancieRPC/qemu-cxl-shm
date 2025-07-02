@@ -18,6 +18,7 @@
 #include "../includes/qemu_cxl_connector.hpp"
 #include "../includes/rpc_interface.hpp"
 #include "../includes/mmio.hpp"
+#include "../includes/cxl_ptr.hpp"
 
 namespace diancie {
 
@@ -29,6 +30,8 @@ struct ChannelInfo {
 };
 
 enum class ClientState { DISCONNECTED, CONNECTING, CONNECTED, ERROR };
+
+static thread_local ShmContext ctx;
 
 // The client library manages the low-level interactions for the user program.
 // 1. Discover service and get allocated channel
@@ -96,6 +99,9 @@ public:
       throw std::runtime_error("Failed to set memory window for channel!");
     }
 
+    // 3. ShmContext - sets the data area_ for the dedicated thread
+    ctx.set_data_area(reinterpret_cast<void*>(data_area_));
+
     // Future: Heartbeat management?
     set_state(ClientState::CONNECTED);
     start_event_loop();
@@ -127,6 +133,8 @@ public:
 
     std::cout << "Making RPC call to function " << Traits::name << " with ID "
               << static_cast<uint32_t>(func_id) << std::endl;
+
+    std::cout << "ctx is " << ctx.get_data_area() << std::endl;
 
     // ... | Function Id | Args | Result | ...
     constexpr size_t fid_size = sizeof(FunctionEnum);
@@ -203,6 +211,8 @@ public:
 
 private:
 
+  // --- Write args ---
+  // overload to handle all diff cases for user transparency?
   template<typename... Args>
   void write_args(void* region, Args&&... args) {
     size_t offset = 0;
@@ -313,6 +323,29 @@ private:
                 << static_cast<int>(old_state) << " to "
                 << static_cast<int>(new_state) << std::endl;
     }
+  }
+// shmalloc - friend
+private:
+  std::vector<std::pair<uint64_t, size_t>> allocations_;
+public:
+  // Use a simple linear allocation scheme - assume no freeing for now
+  // Make same assumption (2) as AIFM
+  template<typename T>
+  global_ptr<T> shm_new_(size_t count=1) {
+    size_t size = sizeof(T) * count;
+    size_t alignment = alignof(T);
+    
+    uint64_t aligned_offset = (next_data_offset_ + alignment - 1) & ~(alignment - 1);
+    
+    std::cout << "Allocating at " << next_data_offset_ << std::endl; 
+    
+    // Check for out of memory later
+    allocations_.emplace_back(aligned_offset, size);
+    next_data_offset_ = aligned_offset + size;
+
+    std::cout << "Next data offset is " << next_data_offset_ << std::endl;
+
+    return global_ptr<T>(aligned_offset, count);
   }
 };
 

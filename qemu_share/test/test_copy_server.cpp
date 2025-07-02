@@ -1,6 +1,7 @@
 #include "./test_copy_interface.hpp"
 #include "../includes/counter_wrapper.hpp"
 #include "../serverlib/rpcserver.hpp"
+#include "../includes/cxl_ptr.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -21,6 +22,14 @@ tracked_int add_impl(tracked_int &a, tracked_int &b) {
   return result;
 }
 
+void process_person(global_ptr<tracked_person> &person) {
+  std::cout << "Person addr is at " << &person->get() << std::endl;
+  person->get().age+=1;
+  person->get().salary+=100;
+  person->get().kill_count+=1;
+  person->printStats();
+}
+
 int main(int argc, char *argv[]) {
   try {
     const std::string device_path = "/dev/cxl_switch_client0";
@@ -33,6 +42,7 @@ int main(int argc, char *argv[]) {
     std::cout << "\n=== Registering RPC Functions ===" << std::endl;
 
     server.register_rpc_function<TestCopyFunctions::ADD>(add_impl);
+    server.register_rpc_function<TestCopyFunctions::PROCESS_PERSON>(process_person);
 
     std::cout << "\n=== Registering Service ===" << std::endl;
     if (!server.register_service()) {

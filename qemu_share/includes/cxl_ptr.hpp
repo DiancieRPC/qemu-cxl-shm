@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <stdexcept>
+#include <iostream>
 namespace diancie {
 
 template <typename FunctionEnum> class DiancieClient;
@@ -35,6 +36,7 @@ public:
 
   T *local() const {
     void *data_area = ShmContext::get_data_area();
+    std::cout << "Dereferencing from data area " << data_area << std::endl;
     if (!data_area) {
       return nullptr;
     }

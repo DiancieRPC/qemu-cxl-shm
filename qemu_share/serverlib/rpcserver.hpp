@@ -7,6 +7,7 @@
 #include "../includes/qemu_cxl_connector.hpp"
 #include "../includes/rpc_interface.hpp"
 #include "../includes/mmio.hpp"
+#include "../includes/cxl_ptr.hpp"
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -20,6 +21,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <threads.h>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -40,6 +42,8 @@ static void segfault_handler(int sig) {
 
 using ClientId = std::string;
 using ChannelId = uint64_t;
+
+static thread_local ShmContext ctx;
 
 template <typename FunctionEnum>
 class DiancieServer : protected QEMUCXLConnector {
@@ -281,6 +285,9 @@ private:
     QueueEntry *client_queue = reinterpret_cast<QueueEntry *>(
         mapped_base + DiancieHeap::CLIENT_QUEUE_OFFSET);
     volatile uint64_t data_area = mapped_base + DiancieHeap::DATA_AREA_OFFSET;
+    // ShmCtx
+    ctx.set_data_area(reinterpret_cast<void*>(data_area));
+    std::cout << "Server shm context is " << ctx.get_data_area() << std::endl;
     // When a server freshly picks up the service_client connection, whether brand
     // new or recover, we read the q_posn from the shm region, which is updated
     // by the server. The client always maintains a local copy.

@@ -51,6 +51,37 @@ void test_basic_arithmetic(DiancieClient<TestCopyFunctions>& client) {
     }
 }
 
+void test_basic_shm(DiancieClient<TestCopyFunctions>& client) {
+    std::cout << "\n=== Testing Shared Memory Operations ===" << std::endl;
+
+    try {
+        auto person = client.shm_new_<tracked_person>();
+        person->get().age = 25;
+        person->get().salary = 100;
+        person->get().kill_count = 0;
+
+        std::cout << "Created person on shm at " << &person << std::endl;
+
+        client.call<TestCopyFunctions::PROCESS_PERSON>(person);
+        
+        assert(person->get().age == 26);
+        assert(person->get().salary == 200);
+        assert(person->get().kill_count == 1);
+
+        person->printStats();
+
+        std::cout << "Referred person on shm at " << &person << std::endl;
+
+        std::cout << "✓ Shared memory operations tests passed!" << std::endl;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "✗ Shared memory operations test failed: " << e.what() << std::endl;
+        throw;
+    }
+}
+
+
+
 int main(int argc, char* argv[]) {
     try {
         const std::string device_path = "/dev/cxl_switch_client0";
@@ -69,6 +100,7 @@ int main(int argc, char* argv[]) {
         
         // Run test suite
         test_basic_arithmetic(client);
+        test_basic_shm(client);
         
         std::cout << "\n=== All Tests Passed! ===" << std::endl;
         
