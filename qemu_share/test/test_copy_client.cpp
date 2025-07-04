@@ -51,6 +51,47 @@ void test_basic_arithmetic(DiancieClient<TestCopyFunctions>& client) {
     }
 }
 
+void test_basic_shm(DiancieClient<TestCopyFunctions>& client) {
+    std::cout << "\n=== Testing Shared Memory Operations ===" << std::endl;
+    
+    try {
+        
+        std::cout << "\n=== Testing shm person ===" << std::endl;
+
+        auto shm_person = client.shm_new_<Person>();
+        shm_person->age = 25;
+        shm_person->salary = 100;
+        shm_person->kill_count = 0;
+
+        std::cout << "Created person on shm at " << &shm_person << std::endl;
+
+        client.call<TestCopyFunctions::PROCESS_SHM_PERSON>(shm_person);
+        
+        assert(shm_person->age == 26);
+        assert(shm_person->salary == 200);
+        assert(shm_person->kill_count == 1);
+
+        std::cout << "Referred person on shm at " << &shm_person << std::endl;
+        Person person{.age=25, .salary=100, .kill_count=0};
+        std::cout << "Created person at " << &person << std::endl;
+        person = client.call<TestCopyFunctions::PROCESS_PERSON>(person);
+
+        assert(person.age == 26);
+        assert(person.salary == 200);
+        assert(person.kill_count == 1);
+
+        std::cout << "\n=== Testing shm person ===" << std::endl;
+
+        std::cout << "✓ Shared memory operations tests passed!" << std::endl;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "✗ Shared memory operations test failed: " << e.what() << std::endl;
+        throw;
+    }
+}
+
+
+
 int main(int argc, char* argv[]) {
     try {
         const std::string device_path = "/dev/cxl_switch_client0";
@@ -69,6 +110,7 @@ int main(int argc, char* argv[]) {
         
         // Run test suite
         test_basic_arithmetic(client);
+        test_basic_shm(client);
         
         std::cout << "\n=== All Tests Passed! ===" << std::endl;
         

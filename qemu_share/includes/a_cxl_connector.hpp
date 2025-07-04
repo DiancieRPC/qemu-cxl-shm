@@ -125,7 +125,7 @@ public:
   static constexpr uint64_t DATA_AREA_OFFSET    = CLIENT_QUEUE_OFFSET + CLIENT_QUEUE_SIZE + SERVER_QUEUE_SIZE;
 
   size_t size;
-  uint64_t DATA_AREA_SIZE    = size - CLIENT_QUEUE_SIZE + SERVER_QUEUE_SIZE;
+  uint64_t DATA_AREA_SIZE    = size - CLIENT_QUEUE_SIZE - SERVER_QUEUE_SIZE;
 public:
   DiancieHeap() = default;
   DiancieHeap(size_t size);

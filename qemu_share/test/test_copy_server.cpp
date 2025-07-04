@@ -1,6 +1,7 @@
 #include "./test_copy_interface.hpp"
 #include "../includes/counter_wrapper.hpp"
 #include "../serverlib/rpcserver.hpp"
+#include "../includes/cxl_ptr.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -21,6 +22,23 @@ tracked_int add_impl(tracked_int &a, tracked_int &b) {
   return result;
 }
 
+// Copy from local to remote
+Person process_person(Person &person) {
+  std::cout << "Person addr is at " << &person << std::endl;
+  person.age+=1;
+  person.salary+=100;
+  person.kill_count+=1;
+  return person;
+}
+
+// Data already remote
+void process_shm_person(global_ptr<Person> &person) {
+  std::cout << "Person addr is at " << &person << std::endl;
+  person->age+=1;
+  person->salary+=100;
+  person->kill_count+=1;
+}
+
 int main(int argc, char *argv[]) {
   try {
     const std::string device_path = "/dev/cxl_switch_client0";
@@ -33,6 +51,8 @@ int main(int argc, char *argv[]) {
     std::cout << "\n=== Registering RPC Functions ===" << std::endl;
 
     server.register_rpc_function<TestCopyFunctions::ADD>(add_impl);
+    server.register_rpc_function<TestCopyFunctions::PROCESS_PERSON>(process_person);
+    server.register_rpc_function<TestCopyFunctions::PROCESS_SHM_PERSON>(process_shm_person);
 
     std::cout << "\n=== Registering Service ===" << std::endl;
     if (!server.register_service()) {
