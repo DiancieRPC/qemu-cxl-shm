@@ -422,12 +422,11 @@ static void bar1_control_write(void *opaque, hwaddr addr, uint64_t val, unsigned
             
                     CXL_SWITCH_DPRINTF("Info: Handling RPC_SET_BAR2_WINDOW request. Offset=0x%"PRIx64", Size=0x%"PRIx64"\n",
                                     set_window_req->offset, set_window_req->size);
-                    
-                    if (set_window_req->size <= s->bar2_data_size && (set_window_req->offset + set_window_req->size) <= s->total_pool_size) {
+
+                    if (set_window_req->size <= s->bar2_data_size && ((set_window_req->offset + set_window_req->size) <= s->total_pool_size) && register_new_channel(set_window_req->offset, set_window_req->size, set_window_req->channel_id, s)) {
                         set_window_resp.status = CXL_IPC_STATUS_OK;
-                        register_new_channel(set_window_req->offset, set_window_req->size, set_window_req->channel_id, s);
                         CXL_SWITCH_DPRINTF("Info: BAR2 window set successfully. Offset=0x%"PRIx64", Size=0x%"PRIx64"\n",
-                                        s->bar2_data_window_offset, s->bar2_data_window_size);
+                            s->bar2_data_window_offset, s->bar2_data_window_size);
                     } else {
                         set_window_resp.status = CXL_IPC_STATUS_BAR2_FAILED;
                         CXL_SWITCH_DPRINTF("Error: Invalid BAR2 window configuration. Offset=0x%"PRIx64", Size=0x%"PRIx64"\n",
