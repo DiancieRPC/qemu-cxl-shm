@@ -163,6 +163,7 @@ typedef struct {
     uint8_t type;
     char service_name[MAX_SERVICE_NAME_LEN];
     char instance_id[MAX_INSTANCE_ID_LEN];
+    // TODO: Request size here
 } cxl_ipc_rpc_request_channel_req_t;
 
 typedef struct {

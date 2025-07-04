@@ -24,16 +24,16 @@ public:
 template <typename T> class global_ptr {
 private:
   template <typename FunctionEnum> friend class DiancieClient;
-
+  
   uint64_t offset_;
   size_t count_;
-
+  
   global_ptr(uint64_t offset, size_t count = 1)
-      : offset_(offset), count_(count) {}
-
+  : offset_(offset), count_(count) {}
+  
 public:
   global_ptr() : offset_(0), count_(0) {}
-
+  
   T *local() const {
     void *data_area = ShmContext::get_data_area();
     std::cout << "Dereferencing from data area " << data_area << std::endl;
