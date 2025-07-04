@@ -376,7 +376,7 @@ void CXLFabricManager::handle_rpc_request_channel_req(int qemu_client_fd, const 
   //       an issue.
   std::vector<AllocatedRegionInfo> allocated_regions;
 
-  uint32_t requested_size = (1 * GIGABYTE);
+  uint32_t requested_size = (256 * MEGABYTE);
   
   int num_allocated_replicas = 0;
   for (size_t i = 0; i < mem_devices_.size() && num_allocated_replicas < NUM_REPLICAS; i++) {
