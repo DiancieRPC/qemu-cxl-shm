@@ -438,12 +438,22 @@ static void bar1_control_write(void *opaque, hwaddr addr, uint64_t val, unsigned
                     tmp_status = set_window_resp.status;
                     expected_server_resp_len = 0; // no server payload
                     break;
+                }
+                case CXL_MSG_TYPE_RPC_SERVER_CONNECTED: {
+                    // Simple route to FM
+                    cxl_ipc_rpc_server_connected_t *server_connected_resp = (cxl_ipc_rpc_server_connected_t *)s->bar0_mailbox;
+                    send(s->server_fd, server_connected_resp, sizeof(*server_connected_resp), 0);
+                    // No need for a response
+                    ipc_ret = 0;
+                    tmp_status = CXL_IPC_STATUS_OK;
+                    expected_server_resp_len = 0;
+                    break;
+                }
                 default:
                     CXL_SWITCH_DPRINTF("Error: Unknown command type 0x%02x.\n", cmd_type);
                     qemu_mutex_lock(&s->lock);
                     s->command_status_reg = CMD_STATUS_ERROR_INTERNAL;
                     goto cmd_done_unlock_no_msi;
-            }
         }
         
         qemu_mutex_lock(&s->lock);

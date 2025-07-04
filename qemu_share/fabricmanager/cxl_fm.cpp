@@ -351,21 +351,7 @@ void CXLFabricManager::handle_rpc_request_channel_req(int qemu_client_fd, const 
     ::send(qemu_client_fd, &client_resp, sizeof(client_resp), 0);
   }
 
-  // 2. Find a server to service the RPC connection request
-  if (service_it->second.empty()) {
-    CXL_FM_LOG("RPC service '" + service_name_str + "' has no instances registered.");
-    client_resp.status = CXL_IPC_STATUS_SERVICE_NOT_FOUND;
-    ::send(qemu_client_fd, &client_resp, sizeof(client_resp), 0);
-  }
-
-  // Danger here: atm, our QEMU VMs cannot really concurrently service RPCs
-  //              but here, we are picking the first server that can service
-  //              the RPC! Concurrently handling RPCs is the ideal behavior,
-  //              so this line will not change. OTOH, to research on QEMU
-  chosen_server_info = service_it->second.front();
-  qemu_server_fd = chosen_server_info.qemu_client_fd;
-
-  // 3. Find 3 mem devices to back up the connection
+  // 2. Find 3 mem devices to back up the connection
   // TODO: Atm, we do a simple strategy of always picking the first 3 available
   //       ones. Obviously, some form of load balancing should be performed in
   //       the actual impl.
@@ -410,10 +396,66 @@ void CXLFabricManager::handle_rpc_request_channel_req(int qemu_client_fd, const 
     return;
   }
 
-  // 4. Create RPC Connection struct
-  // Monotonically increment channel_id
-  // TODO: We would use UUID in the future
+  // 3. Monotonically increment channel id
   channel_id_t assigned_channel_id = curr_channel_id++;
+
+  // 
+  // 4. Find a server to service the RPC connection request
+  //    Keep trying until one server is able to service the request
+  // 
+
+  if (service_it->second.empty()) {
+    CXL_FM_LOG("RPC service '" + service_name_str + "' has no instances registered.");
+    client_resp.status = CXL_IPC_STATUS_SERVICE_NOT_FOUND;
+    ::send(qemu_client_fd, &client_resp, sizeof(client_resp), 0);
+  }
+
+  bool found_server = false;
+
+  for (auto& server_info : service_it->second) {
+    if (server_info.qemu_client_fd < 0) {
+      continue;
+    }
+
+    // Send new client payload to server
+    cxl_ipc_rpc_new_client_notify_t server_notify_payload;
+    server_notify_payload.type = CXL_MSG_TYPE_RPC_NEW_CLIENT_NOTIFY;
+    server_notify_payload.channel_id = assigned_channel_id;
+    snprintf(server_notify_payload.client_instance_id, 
+             sizeof(server_notify_payload.client_instance_id), 
+             "%s", client_id_str.c_str());
+    snprintf(server_notify_payload.service_name, 
+             sizeof(server_notify_payload.service_name),
+             "%s", service_name_str.c_str());
+    server_notify_payload.channel_shm_size = requested_size;
+    server_notify_payload.channel_shm_offset = 0;
+    ::send(server_info.qemu_client_fd, &server_notify_payload, sizeof(server_notify_payload), 0);
+    // Wait for server to ack that it was a success before we can continue
+    cxl_ipc_rpc_server_connected_t server_resp;
+    ::recv(server_info.qemu_client_fd, &server_resp, sizeof(server_resp), 0);
+    if (server_resp.status == CXL_IPC_STATUS_OK) {
+      found_server = true;
+      chosen_server_info = server_info;
+      qemu_server_fd = chosen_server_info.qemu_client_fd;
+      break;
+    }
+    // Try another server until we reach the end and have no more available
+    // servers
+  }
+
+  if (!found_server) {
+    CXL_FM_LOG("No healthy server found for service '" + service_name_str + "'");
+    // Rollback allocated regions
+    for (const AllocatedRegionInfo& allocated_region : allocated_regions) {
+      allocated_region.backing_device->free(allocated_region.offset, allocated_region.size);
+    }
+    // Tell client it cannot be serviced
+    client_resp.status = CXL_IPC_STATUS_SERVICE_NOT_FOUND;
+    ::send(qemu_client_fd, &client_resp, sizeof(client_resp), 0);
+    return;
+  }
+
+  // 5. Create RPC Connection struct
   if (curr_channel_id == UINT64_MAX) {
     curr_channel_id = 0;
   }
@@ -432,36 +474,12 @@ void CXLFabricManager::handle_rpc_request_channel_req(int qemu_client_fd, const 
 
   active_rpc_connections_[assigned_channel_id] = std::move(rpc_connection);
 
-  // 5. Send response to QEMU client and server
+  // 6. Send success response to client
+  // What if the send here fails?
   client_resp.status = CXL_IPC_STATUS_OK;
-  // TODO: Eventually will not be hardcoded
-  // TODO: Currently, non-concurrent QEMU VM design, so all logical offsets are 0
   client_resp.channel_shm_size = requested_size;
   client_resp.channel_shm_offset = 0;
   client_resp.channel_id = assigned_channel_id;
-
-  // Prepare server payload
-  cxl_ipc_rpc_new_client_notify_t server_notify_payload;
-  server_notify_payload.type = CXL_MSG_TYPE_RPC_NEW_CLIENT_NOTIFY;
-  server_notify_payload.channel_id = assigned_channel_id;
-  snprintf(server_notify_payload.client_instance_id, 
-         sizeof(server_notify_payload.client_instance_id), 
-         "%s", client_id_str.c_str());
-  snprintf(server_notify_payload.service_name, 
-          sizeof(server_notify_payload.service_name),
-          "%s", service_name_str.c_str());
-  server_notify_payload.channel_shm_size = requested_size;
-  server_notify_payload.channel_shm_offset = 0;
-
-  // TODO: Error handling if either send fails
-  if (qemu_server_fd >= 0) {
-    CXL_FM_LOG("Sending RPC_NEW_CLIENT_NOTIFY to server, fd: " + std::to_string(qemu_server_fd));
-    ::send(qemu_server_fd, &server_notify_payload, sizeof(server_notify_payload), 0);
-  } else {
-    // This shud not have happened
-    CXL_FM_LOG("Chosen server had invalid fd " + std::to_string(qemu_server_fd));
-  }
-
   ::send(qemu_client_fd, &client_resp, sizeof(client_resp), 0);
   CXL_FM_LOG("Sent RPC_REQUEST_CHANNEL_RESP to client, fd: " + std::to_string(qemu_client_fd) +
                ", channel_id: " + std::to_string(assigned_channel_id) +
@@ -866,9 +884,11 @@ void CXLFabricManager::handle_qemu_disconnect(int qemu_vm_fd, int& max_fd) {
   CXL_FM_LOG("QEMU VM disconnected, fd: " + std::to_string(qemu_vm_fd));
   // 1. Remove FD from service registry
   cleanup_services_by_fd(qemu_vm_fd);
+  
   // 2. Find all channels that QEMU VM FD was involved in.
   if (fd_to_channel_ids_.count(qemu_vm_fd) > 0) {
     CXL_FM_LOG("Found " + std::to_string(fd_to_channel_ids_[qemu_vm_fd].size()) + " channels associated with fd " + std::to_string(qemu_vm_fd) + ". Cleaning up all");
+  
     // For each active channel the VM was in, either terminate or find replacement
     for (const auto& channel_idx : fd_to_channel_ids_.at(qemu_vm_fd)) {
       auto& conn = active_rpc_connections_.at(channel_idx);

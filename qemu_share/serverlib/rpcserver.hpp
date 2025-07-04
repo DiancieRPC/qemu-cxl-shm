@@ -140,11 +140,6 @@ public:
                     << std::endl;
           handle_channel_close(event_data->channel_id);
           break;
-        case CXLEvent::CLIENT_DISCONNECTED:
-          std::cout << "Received Client disconnected event from event loop"
-                    << std::endl;
-          handle_client_disconnect(event_data->channel_id);
-          break;
         case CXLEvent::COMMAND_RECEIVED:
           break;
         case CXLEvent::ERROR_OCURRED:
@@ -220,12 +215,27 @@ private:
   }
 
   void handle_new_client(std::unique_ptr<AbstractCXLConnection> conn) {
-    uint64_t mmio_offset = get_next_channel_offset();
-    channel_offsets_[conn->get_channel_id()] = mmio_offset;
-    set_memory_window(mmio_offset, conn->get_size(),
-                      conn->get_channel_id());
-    uint64_t channel_id = conn->get_channel_id();
+    cxl_ipc_rpc_server_connected_t resp;
+    resp.type = CXL_MSG_TYPE_RPC_SERVER_CONNECTED;
 
+    uint64_t mmio_offset = get_next_channel_offset();
+    std::cout << "mmio offset is " << mmio_offset << std::endl;
+    channel_offsets_[conn->get_channel_id()] = mmio_offset;
+    bool success = set_memory_window(mmio_offset, conn->get_size(),
+                      conn->get_channel_id());
+    
+    // Notify the FM if this server could not succeed
+    if (!success) {
+      resp.status = CXL_IPC_STATUS_ERROR_GENERIC;
+      send_command(&resp, sizeof(resp));
+      // No need to care about response here
+      return;
+    }
+
+    resp.status = CXL_IPC_STATUS_OK;
+    send_command(&resp, sizeof(resp));
+
+    uint64_t channel_id = conn->get_channel_id();
     std::cout << "New client connected with channel ID: "
               << conn->get_channel_id() << ", Base: " << conn->get_base()
               << ", Size: " << conn->get_size() << std::endl;
@@ -233,13 +243,25 @@ private:
     clients_[channel_id] =
         std::thread([this, conn = std::move(conn), mmio_offset]() mutable {
           this->service_client(std::move(conn), mmio_offset);
-        });
+      });
   }
 
+  // The FM explicitly handles for QEMU disconnects
+  // This handler is called by the eventfd notification system
+  // When it is called, the FM has already deregistered it
+  // This happened becos
+  //    1. The client VM disconnected
+  //    2. The client RPC session stopped
+  // So a channel close event and a DC event are the same
   void handle_channel_close(uint64_t channel_id) {
     std::cout << "Channel with ID " << channel_id << " is being closed."
               << std::endl;
-
+    // Close channel offset
+    auto it_offset = channel_offsets_.find(channel_id);
+    if (it_offset != channel_offsets_.end()) {
+      channel_offsets_.erase(it_offset);
+    }
+    // Close RPC server thread handler for the client
     auto it = clients_.find(channel_id);
     if (it != clients_.end()) {
       if (it->second.joinable()) {
@@ -251,19 +273,6 @@ private:
     } else {
       std::cerr << "Channel with ID " << channel_id << " not found."
                 << std::endl;
-    }
-  }
-
-  void handle_client_disconnect(uint64_t channel_id) {
-    std::cout << "Client with channel ID " << channel_id << " disconnected."
-              << std::endl;
-
-    auto it = clients_.find(channel_id);
-    if (it != clients_.end()) {
-      if (it->second.joinable()) {
-        it->second.join();
-      }
-      clients_.erase(it);
     }
   }
 
