@@ -9,12 +9,15 @@ CLIENT_SRCS = test_client.cpp ../includes/*.cpp
 COPY_SERVER_SRCS = test_copy_server.cpp ../includes/*.cpp
 COPY_CLIENT_SRCS = test_copy_client.cpp ../includes/*.cpp
 
+FAILURE_SERVER_SRCS = test_failure_server.cpp ../includes/*.cpp
+FAILURE_CLIENT_SRCS = test_failure_client.cpp ../includes/*.cpp
+
 # Libraries
 LIBS = -lpthread
 
 .PHONY: all clean
 
-all: test_server test_client copy_server copy_client
+all: test_server test_client copy_server copy_client failure_server failure_client
 
 test_server: $(SERVER_SRCS)
 	@echo "Building test server..."
@@ -32,6 +35,14 @@ copy_client: $(COPY_CLIENT_SRCS)
 	@echo "Building copy client..."
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -I../clientlib -I. $(COPY_CLIENT_SRCS) $(LIBS) -o $@
 
+failure_server: $(FAILURE_SERVER_SRCS)
+	@echo "Building failure server..."
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -I../serverlib -I. $(FAILURE_SERVER_SRCS) $(LIBS) -o $@
+
+failure_client: $(FAILURE_CLIENT_SRCS)
+	@echo "Building failure client..."
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -I../clientlib -I. $(FAILURE_CLIENT_SRCS) $(LIBS) -o $@
+
 clean:
 	@echo "Cleaning..."
-	rm -f test_server test_client copy_client copy_server
+	rm -f test_server test_client copy_client copy_server failure_server failure_client
