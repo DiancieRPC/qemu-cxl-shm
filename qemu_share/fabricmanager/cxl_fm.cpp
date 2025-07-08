@@ -577,6 +577,16 @@ void CXLFabricManager::handle_qemu_vm_message(int qemu_vm_fd) {
       CXL_FM_LOG("RPC_RELEASE_CHANNEL_REQ recv error, expected " + std::to_string(sizeof(rpc_release_channel_req)) + " bytes, got " + std::to_string(n));
     }
     break;
+  case CXL_MSG_TYPE_RPC_SERVER_CONNECTED:
+    CXL_FM_LOG("Reading buffer for server connected");
+    cxl_ipc_rpc_server_connected_t notif;
+    n = ::recv(qemu_vm_fd, &notif, sizeof(notif), MSG_WAITALL);
+    if (n == sizeof(notif)) {
+      CXL_FM_LOG("Flushed the buffer");
+    } else {
+      CXL_FM_LOG("Server notif went wrong");
+    }
+    break;
   default:
     CXL_FM_LOG("Unknown message type header: " + std::to_string(msg_type_header) +
                ", fd: " + std::to_string(qemu_vm_fd));

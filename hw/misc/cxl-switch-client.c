@@ -444,6 +444,7 @@ static void bar1_control_write(void *opaque, hwaddr addr, uint64_t val, unsigned
                     cxl_ipc_rpc_server_connected_t *server_connected_resp = (cxl_ipc_rpc_server_connected_t *)s->bar0_mailbox;
                     send(s->server_fd, server_connected_resp, sizeof(*server_connected_resp), 0);
                     // No need for a response
+                    // Still need to drain it server side.
                     ipc_ret = 0;
                     tmp_status = CXL_IPC_STATUS_OK;
                     expected_server_resp_len = 0;
