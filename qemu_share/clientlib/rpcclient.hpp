@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
-#include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -14,7 +13,6 @@
 
 #include "../includes/a_cxl_connector.hpp"
 #include "../includes/cxl_switch_ipc.h"
-#include "../includes/ioctl_defs.h"
 #include "../includes/qemu_cxl_connector.hpp"
 #include "../includes/rpc_interface.hpp"
 #include "../includes/mmio.hpp"
@@ -59,6 +57,7 @@ private:
   QueueEntry *client_queue_;
   QueueEntry *server_queue_;
   uint64_t data_area_;
+  uint64_t data_area_size_;
   // We only need one queue offset for both queues
   // Our RPC system is synchronous: there only ever
   uint64_t queue_offset_ = 0;
@@ -90,6 +89,7 @@ public:
     server_queue_ = reinterpret_cast<QueueEntry *>(
         base_addr_ + DiancieHeap::SERVER_QUEUE_OFFSET);
     data_area_ = base_addr_ + DiancieHeap::DATA_AREA_OFFSET;
+    data_area_size_ = DiancieHeap::get_data_area_size(base_size_);
     next_data_offset_ = 0;
 
     // 2. Map mem window
@@ -144,6 +144,13 @@ public:
     const size_t total_size = fid_size + args_size + result_size;
     // Client does not care about q_posns.
     uint64_t request_base = data_area_ + next_data_offset_;
+    // Handle wrap-around in data area
+    if (request_base + total_size >= data_area_ + data_area_size_) {
+      // Assume its safe to write over the wrap around
+      std::cout << "Wrapping around data area!" << std::endl;
+      request_base = data_area_;
+    }
+
     FunctionEnum *func_id_ptr = reinterpret_cast<FunctionEnum *>(request_base);
     void *args_region =
         reinterpret_cast<void *>(request_base + fid_size);

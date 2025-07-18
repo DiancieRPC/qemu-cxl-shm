@@ -108,8 +108,6 @@ public:
 /// Idea: Store the offsets for server/client queue at the beginning
 /// Idea: Enumerate the fixed offsets for server/client queue
 class DiancieHeap {
-private:
-
 public:
   // Each queue entry is 64 bits, or 8 bytes.
   static constexpr int NUM_QUEUE_ENTRIES = 128;
@@ -123,13 +121,10 @@ public:
   static constexpr uint64_t SERVER_QUEUE_SIZE   = NUM_QUEUE_ENTRIES * 8;
 
   static constexpr uint64_t DATA_AREA_OFFSET    = CLIENT_QUEUE_OFFSET + CLIENT_QUEUE_SIZE + SERVER_QUEUE_SIZE;
-
-  size_t size;
-  uint64_t DATA_AREA_SIZE    = size - CLIENT_QUEUE_SIZE - SERVER_QUEUE_SIZE;
 public:
-  DiancieHeap() = default;
-  DiancieHeap(size_t size);
-  ~DiancieHeap();
+  static uint64_t get_data_area_size(size_t size) {
+    return size - 8 - CLIENT_QUEUE_SIZE - SERVER_QUEUE_SIZE;
+  }
 };
 
 /// Represents an abstract CXL shm connection between a client and server.

@@ -12,12 +12,14 @@ COPY_CLIENT_SRCS = test_copy_client.cpp ../includes/*.cpp
 FAILURE_SERVER_SRCS = test_failure_server.cpp ../includes/*.cpp
 FAILURE_CLIENT_SRCS = test_failure_client.cpp ../includes/*.cpp
 
+WRAP_AROUND_SRCS = test_wraparound_client.cpp ../includes/*.cpp
+
 # Libraries
 LIBS = -lpthread
 
 .PHONY: all clean
 
-all: test_server test_client copy_server copy_client failure_server failure_client
+all: test_server test_client copy_server copy_client failure_server failure_client test_wraparound_client
 
 test_server: $(SERVER_SRCS)
 	@echo "Building test server..."
@@ -26,6 +28,10 @@ test_server: $(SERVER_SRCS)
 test_client: $(CLIENT_SRCS)
 	@echo "Building test client..."
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -I../clientlib -I. $(CLIENT_SRCS) $(LIBS) -o $@
+
+test_wraparound_client: $(WRAP_AROUND_SRCS)
+	@echo "Building wrap around client..."
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -I../clientlib -I. $(WRAP_AROUND_SRCS) $(LIBS) -o $@
 
 copy_server: $(COPY_SERVER_SRCS)
 	@echo "Building copy server..."
