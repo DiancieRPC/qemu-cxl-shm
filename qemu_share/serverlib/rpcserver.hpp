@@ -8,6 +8,7 @@
 #include "../includes/rpc_interface.hpp"
 #include "../includes/mmio.hpp"
 #include "../includes/cxl_ptr.hpp"
+#include "../includes/wal.hpp"
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -276,6 +277,34 @@ private:
     }
   }
 
+  void recover(uint64_t journal_area, uint64_t data_area, uint64_t j_start, uint64_t j_end) {
+    // The journal log is essentially
+    // <WALEntry><Raw Data><WALEntry><Raw Data>...
+    // Where raw data is the undo value: the value we want to write back
+    // First construct a list of WALEntry in order from j_start to j_end
+    // Then go from reverse, performing the undo operation
+    size_t curr = j_start;
+    std::vector<WALEntry*> undo_stack;
+    std::cout << "Performing recovery from " << j_start << " to " << j_end
+              << std::endl;
+    while (curr < j_end) {
+      WALEntry* entry_ptr = reinterpret_cast<WALEntry*>(journal_area + curr);
+      undo_stack.push_back(entry_ptr);
+      curr += sizeof(WALEntry);
+      curr += entry_ptr->val_size; // Skip past the raw data
+      std::cout << "Added WALEntry with \n"
+                << " val size: " << entry_ptr->val_size
+                << " data off: " << entry_ptr->data_offset
+                << std::endl;
+    }
+    for (auto it = undo_stack.rbegin(); it != undo_stack.rend(); ++it) {
+      WALEntry* entry = *it;
+      char* raw_data = reinterpret_cast<char*>(entry) + sizeof(WALEntry);
+      std::memcpy(reinterpret_cast<void*>(data_area + entry->data_offset), raw_data, entry->val_size);
+      std::cout << "Resetted value back!" << std::endl;
+    }
+  }
+
   /// This is the function that is launched into its respective thread context
   /// TODO: Currently in failure-free domain.
   void service_client(std::unique_ptr<AbstractCXLConnection> connection, uint64_t mmio_offset) {
@@ -289,19 +318,28 @@ private:
     volatile uint64_t mapped_base =
         reinterpret_cast<uint64_t>(bar2_base_) + mmio_offset;
     volatile uint64_t* q_posn = reinterpret_cast<volatile uint64_t*>(mapped_base + DiancieHeap::QUEUE_POSITION);
+    volatile uint64_t* j_posn = reinterpret_cast<volatile uint64_t*>(mapped_base + DiancieHeap::JOURNAL_POSN);
     QueueEntry *server_queue = reinterpret_cast<QueueEntry *>(
         mapped_base + DiancieHeap::SERVER_QUEUE_OFFSET);
     QueueEntry *client_queue = reinterpret_cast<QueueEntry *>(
         mapped_base + DiancieHeap::CLIENT_QUEUE_OFFSET);
     volatile uint64_t data_area = mapped_base + DiancieHeap::DATA_AREA_OFFSET;
+    volatile uint64_t journal_area = mapped_base + DiancieHeap::JOURNAL_AREA;
+
+    std::cout << " data area is 0x" << std::hex << data_area
+              << ",joun area is 0x" << journal_area << std::dec << std::endl; 
     // ShmCtx
     ctx.set_data_area(reinterpret_cast<void*>(data_area));
+    ctx.set_journal_area(reinterpret_cast<void*>(journal_area));
     std::cout << "Server shm context is " << ctx.get_data_area() << std::endl;
     // When a server freshly picks up the service_client connection, whether brand
     // new or recover, we read the q_posn from the shm region, which is updated
     // by the server. The client always maintains a local copy.
     // q_offset is a generational counter
     volatile uint64_t q_offset = *q_posn;
+    // Journal offset
+    volatile uint64_t j_offset = *j_posn;
+
     // Invariant: they only differ by 1 position at most. We assume a strict
     //            synchronous execution.
     // TODO: How to handle wrap around? Not realistic to assume only 128 RPC
@@ -314,14 +352,14 @@ private:
     while (true) {
       // TODO: Do optimized polling
       while (client_queue[offset].get_flag() != commit_flag) {
-        std::this_thread::sleep_for(std::chrono::microseconds(100000));
+        std::this_thread::sleep_for(std::chrono::microseconds(1000000));
       }
       // Get offset and abs addr from curr queue entry
       uint64_t request_offset = client_queue[offset].get_address();
       uint64_t request_addr = request_offset + data_area;
 
       try {
-
+        // ... | Function Id | Journal Header | Args | Result | ...
         std::cout << "Processing request at offset: " << std::hex
                   << request_offset << ", absolute address: " << request_addr
                   << std::dec << std::endl;
@@ -340,8 +378,30 @@ private:
         const FunctionInfo &func_info = it->second;
 
         size_t fid_offset = sizeof(FunctionEnum);
-        size_t args_offset = fid_offset;
+        size_t j_offset_size = sizeof(uint64_t);
+        
+        size_t args_offset = fid_offset + j_offset_size * 2;
         size_t result_offset = args_offset + func_info.args_size;
+
+        void *j_start = reinterpret_cast<void *>(request_addr + fid_offset);
+        void *j_end = reinterpret_cast<void *>(request_addr + fid_offset + j_offset_size);
+
+        uint64_t j_start_val = *reinterpret_cast<uint64_t*>(j_start);
+        uint64_t j_end_val = *reinterpret_cast<uint64_t*>(j_end);
+        
+        std::cout << "j_start_val is " << j_start_val << std::endl;
+        std::cout << "j_end_val is " << j_end_val << std::endl;
+        
+        if (j_start_val == 0 && j_end_val == 0) { // Very first time
+          *reinterpret_cast<uint64_t*>(j_start) = j_offset;
+          *reinterpret_cast<uint64_t*>(j_end) = j_offset;
+        } else if (j_start_val != j_end_val) {
+          // This server is taking over a server which failed in the middle
+          // of computing the RPC. Need to perform recovery before it can begin
+          recover(journal_area, data_area, j_start_val, j_end_val);
+          // Reset the j_end
+          *reinterpret_cast<uint64_t*>(j_end) = j_start_val;
+        }
 
         void *args_region =
             reinterpret_cast<void *>(request_addr + args_offset);

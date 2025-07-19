@@ -13,12 +13,19 @@ template <typename FunctionEnum> class DiancieServer;
 class ShmContext {
 private:
   inline static thread_local void *data_area_ = nullptr;
-
+  inline static thread_local void *journal_area_ = nullptr;
+  
 public:
   ShmContext() {data_area_ = nullptr;}
   ShmContext(void *data_area) { data_area_ = data_area; }
   static void *get_data_area() { return data_area_; }
   static void set_data_area(void *data_area) { data_area_ = data_area; }
+
+  static void *get_journal_area() { return journal_area_; }
+  static void set_journal_area(void *journal_area) { 
+    journal_area_ = journal_area; 
+  }
+
 };
 
 template <typename T> class global_ptr {

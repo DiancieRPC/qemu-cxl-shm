@@ -1,15 +1,18 @@
 #include "./test_failure_interface.hpp"
 #include "../serverlib/rpcserver.hpp"
 #include "../includes/cxl_ptr.hpp"
+#include "../includes/wal.hpp"
 #include <chrono>
+#include <cstring>
 #include <thread>
 
 using namespace diancie;
 
 void add_impl(global_ptr<int>& a) {
-  a++;
+  WAL_BEGIN(a);
+  WAL_STORE(a, *a+1);
   std::this_thread::sleep_for(std::chrono::seconds(2));
-  a++;
+  WAL_STORE(a, *a+1);
 }
 
 int main(int argc, char *argv[]) {

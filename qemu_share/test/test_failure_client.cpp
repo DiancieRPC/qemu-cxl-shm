@@ -12,10 +12,10 @@ using namespace diancie;
 
 void test_failure(DiancieClient<TestFailFunctions>& client) {
   auto a = client.shm_new_<int>();
-  *a = 0;
+  *a = 2;
   client.call<TestFailFunctions::ADD>(a);
   std::cout << *a << std::endl;
-  assert(*a == 2);
+  assert(*a == 4);
 }
 
 int main(int argc, char* argv[]) {

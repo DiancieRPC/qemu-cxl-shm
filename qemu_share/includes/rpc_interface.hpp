@@ -16,7 +16,7 @@ struct DiancieFunctionTraits;
     using ReturnType = return_type;                                            \
     using ArgsTuple = std::tuple<__VA_ARGS__>;                                 \
     static constexpr auto function_id = enum_type::func_id;                    \
-    static constexpr const char* name = #func_id;                                               \
+    static constexpr const char* name = #func_id;                              \
   };                                                                           \
 }
 
