@@ -336,16 +336,11 @@ private:
     // by the server. The client always maintains a local copy.
     // q_offset is a generational counter
     volatile uint64_t q_offset = *q_posn;
-    // Journal offset
-    volatile uint64_t j_offset = *j_posn;
+    volatile uint64_t journal_offset = *j_posn;
 
     // Invariant: they only differ by 1 position at most. We assume a strict
     //            synchronous execution.
-    // TODO: How to handle wrap around? Not realistic to assume only 128 RPC
-    //       requests per connection.
-    // We use the raw value of the gc to determine the commit flag
     bool commit_flag = !((q_offset / DiancieHeap::NUM_QUEUE_ENTRIES) % 2);
-    // We modulo it to index into queue
     volatile uint64_t offset = q_offset % DiancieHeap::NUM_QUEUE_ENTRIES;
     
     while (true) {
@@ -353,7 +348,6 @@ private:
       while (client_queue[offset].get_flag() != commit_flag) {
         std::this_thread::sleep_for(std::chrono::microseconds(1000000));
       }
-      // Get offset and abs addr from curr queue entry
       uint64_t request_offset = client_queue[offset].get_address();
       uint64_t request_addr = request_offset + data_area;
 
@@ -362,7 +356,6 @@ private:
         std::cout << "Processing request at offset: " << std::hex
                   << request_offset << ", absolute address: " << request_addr
                   << std::dec << std::endl;
-        // Read function identifier
         volatile FunctionEnum *func_id_ptr =
             reinterpret_cast<FunctionEnum *>(request_addr);
         FunctionEnum func_id = *func_id_ptr;
@@ -392,13 +385,10 @@ private:
         std::cout << "j_end_val is " << j_end_val << std::endl;
         
         if (j_start_val == 0 && j_end_val == 0) { // Very first time
-          *reinterpret_cast<uint64_t*>(j_start) = j_offset;
-          *reinterpret_cast<uint64_t*>(j_end) = j_offset;
-        } else if (j_start_val != j_end_val) {
-          // This server is taking over a server which failed in the middle
-          // of computing the RPC. Need to perform recovery before it can begin
+          *reinterpret_cast<uint64_t*>(j_start) = journal_offset;
+          *reinterpret_cast<uint64_t*>(j_end) = journal_offset;
+        } else if (j_start_val != j_end_val) { // Taking over failed server
           recover(journal_area, data_area, j_start_val, j_end_val);
-          // Reset the j_end
           *reinterpret_cast<uint64_t*>(j_end) = j_start_val;
         }
 
@@ -423,19 +413,8 @@ private:
 
         func_info.handler(args_region, results_region);
         std::cout << "Handler completed successfully " << std::endl;
-        // Set results region for client to read from
         server_queue[offset].set_address(result_offset);
-        // Commits request
         server_queue[offset].set_flag(commit_flag);
-        // After the server has committed its response, it is safe to update
-        // the server offset in the shm region.
-        // We only consider the server failure for a recovery: if the client fails
-        // we terminate the connection. So the client's server offset is local
-        // to its closure.
-        // Is it safe to update the client offset? Also yes. Cos we only consider
-        // server failure for recovery. If server failed and another took over,
-        // we want to look at the latest client request, which is what we wrote.
-        // The client offset is local as well.
         offset = (offset + 1) % DiancieHeap::NUM_QUEUE_ENTRIES;
         *q_posn++;
         if (offset == 0) {
