@@ -306,7 +306,6 @@ private:
   }
 
   /// This is the function that is launched into its respective thread context
-  /// TODO: Currently in failure-free domain.
   void service_client(std::unique_ptr<AbstractCXLConnection> connection, uint64_t mmio_offset) {
     // Install signal handler to ignore segfault
     signal(SIGSEGV, segfault_handler);
