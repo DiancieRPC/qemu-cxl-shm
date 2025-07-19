@@ -1,10 +1,36 @@
 # Log
 
+## 20 July
+
+Spent a lot of time reading up other papers on simulation for other simulation project.
+
+Also spent more time to read up on how CXL memory pooling was done.
+Essentially have two things atm:
+
+1. https://lenovopress.lenovo.com/lp2184-implementing-cxl-memory-on-linux-on-thinksystem-v4-servers
+2. https://www.usenix.org/system/files/atc22-gouk.pdf
+
+More importantly, finally have working WAL and exactly-once semantics!
+Achieved using WAL macros to WAL BEGIN and WAL_STORE.
+Exact mechanism is detailed in the wal file.
+
+Tested and verified the shm increment case.
+Set up is two server VMs and 1 client.
+Crash the server VM during the sleep.
+The other server VM recovers by undoing the effects as stated in the journal. One will observe that from the client pov, even tho the increment
+was destructive, the final result observed is as if no failure! 
+WAHOO!
+
+But more things cud be achieved.
+For starters, the global_ptr abstraction could use a lot more polishing and work.
+And, I also need to add the WAL macros for dealing with field offsets?
+Idk if it just works out of the box. I shall see.
+
 ## TODO Plan
 
-- [ ] Implement retrying (for at least once)
-- [ ] Replication test
-- [ ] WAL Log 
+- [x] Implement retrying (for at least once)
+- [x] Replication test
+- [x] WAL Log 
 
 - [ ] (High prior but delayed) bug (SIGILL) with double type params. ints work.
 
