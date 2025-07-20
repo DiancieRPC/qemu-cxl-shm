@@ -53,7 +53,6 @@ struct WALEntry {
   uint64_t data_offset; // The offset to the object in shared memory
 };
 
-// WAL Debug logging macro
 static constexpr bool WAL_DEBUG_ENABLED = true;
 #define WAL_DEBUG_LOG(fmt, ...) do { \
     if (WAL_DEBUG_ENABLED) { \
@@ -61,34 +60,29 @@ static constexpr bool WAL_DEBUG_ENABLED = true;
     } \
 } while(0)
 
-// Debug wrapper functions for easier GDB debugging
 template<typename VarType, typename ValueType>
 inline void debug_wal_store(VarType& var, const ValueType& value, 
                            void* j_area, size_t& j_end, size_t* j_end_ptr) {
     WAL_DEBUG_LOG("j_area=%p, j_end=%zu\n", j_area, j_end);
     WAL_DEBUG_LOG("var address=%p, var size=%zu\n", &var, sizeof(value));
     
-    // Debug the global_ptr object structure
     WAL_DEBUG_LOG("calling var.raw_offset()...\n");
-    auto offset = var.raw_offset();
-    WAL_DEBUG_LOG("var.raw_offset()=%lu\n", offset);
+    WAL_DEBUG_LOG("var.raw_offset()=%lu\n", var.raw_offset());
     
     if (!j_area) {
         WAL_DEBUG_LOG("ERROR - journal area is null\n");
         throw std::runtime_error("WAL_STORE: journal area is null");
     }
     
-    WALEntry entry{sizeof(value), offset};
+    WALEntry entry{sizeof(value), var.raw_offset()};
     WAL_DEBUG_LOG("entry.val_size=%lu, entry.data_offset=%lu\n", 
            entry.val_size, entry.data_offset);
     
     *reinterpret_cast<WALEntry*>(reinterpret_cast<char*>(j_area) + j_end) = entry;
     j_end += sizeof(WALEntry);
     
-    // Copy the actual value, not the global_ptr struct
-    ValueType current_value = *var;
-    WAL_DEBUG_LOG("current value before assignment: %d\n", static_cast<int>(current_value));
-    memcpy(reinterpret_cast<char*>(j_area) + j_end, &current_value, sizeof(value));
+    // Copy old value to journal area immediately after WALEntry
+    memcpy(reinterpret_cast<char*>(j_area) + j_end, &(*var), sizeof(value));
     j_end += sizeof(value);
 
     *j_end_ptr = j_end;
