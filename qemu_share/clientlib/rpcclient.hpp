@@ -338,10 +338,11 @@ private:
   }
 // shmalloc - friend
 private:
-  std::vector<std::pair<uint64_t, size_t>> allocations_;
-public:
   // Use a simple linear allocation scheme - assume no freeing for now
   // Make same assumption (2) as AIFM
+  std::vector<std::pair<uint64_t, size_t>> allocations_;
+
+  // Construct a gptr with no initialization on the object
   template<typename T>
   global_ptr<T> shm_new_(size_t count=1) {
     size_t size = sizeof(T) * count;
@@ -358,6 +359,14 @@ public:
     std::cout << "Next data offset is " << next_data_offset_ << std::endl;
 
     return global_ptr<T>(aligned_offset, count);
+  }
+public:
+  // Construct a gptr by passing in the value to initialize in shm.
+  template<typename T>
+  global_ptr<T> shm_new(T&& value) {
+    global_ptr<T> gptr = shm_new_<T>(1);
+    *gptr = value;
+    return gptr;
   }
 };
 

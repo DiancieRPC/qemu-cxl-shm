@@ -60,38 +60,7 @@ static constexpr bool WAL_DEBUG_ENABLED = true;
     } \
 } while(0)
 
-template<typename VarType, typename ValueType>
-inline void debug_wal_store(VarType& var, const ValueType& value, 
-                           void* j_area, size_t& j_end, size_t* j_end_ptr) {
-    WAL_DEBUG_LOG("j_area=%p, j_end=%zu\n", j_area, j_end);
-    WAL_DEBUG_LOG("var address=%p, var size=%zu\n", &var, sizeof(value));
-    
-    WAL_DEBUG_LOG("calling var.raw_offset()...\n");
-    WAL_DEBUG_LOG("var.raw_offset()=%lu\n", var.raw_offset());
-    
-    if (!j_area) {
-        WAL_DEBUG_LOG("ERROR - journal area is null\n");
-        throw std::runtime_error("WAL_STORE: journal area is null");
-    }
-    
-    WALEntry entry{sizeof(value), var.raw_offset()};
-    WAL_DEBUG_LOG("entry.val_size=%lu, entry.data_offset=%lu\n", 
-           entry.val_size, entry.data_offset);
-    
-    *reinterpret_cast<WALEntry*>(reinterpret_cast<char*>(j_area) + j_end) = entry;
-    j_end += sizeof(WALEntry);
-    
-    // Copy old value to journal area immediately after WALEntry
-    memcpy(reinterpret_cast<char*>(j_area) + j_end, &(*var), sizeof(value));
-    j_end += sizeof(value);
-
-    *j_end_ptr = j_end;
-    *var = value;
-    
-    WAL_DEBUG_LOG("new j_end=%zu, assigned value=%zu\n", j_end, value);
-}
-
-inline void debug_wal_begin(void*& j_area, size_t& j_start, size_t*& j_end_ptr, size_t& j_end, 
+inline void wal_begin(void*& j_area, size_t& j_start, size_t*& j_end_ptr, size_t& j_end, 
                            void* first_param_addr) {
     WAL_DEBUG_LOG("first_param_addr=%p\n", first_param_addr);
     
@@ -117,6 +86,63 @@ inline void debug_wal_begin(void*& j_area, size_t& j_start, size_t*& j_end_ptr, 
     WAL_DEBUG_LOG("j_end=%zu\n", j_end);
 }
 
+template<typename VarType, typename ValueType>
+inline void wal_store(VarType& gptr_var, const ValueType& value, 
+                           void* j_area, size_t& j_end, size_t* j_end_ptr) {
+    WAL_DEBUG_LOG("j_area=%p, j_end=%zu\n", j_area, j_end);
+    WAL_DEBUG_LOG("var address=%p, var size=%zu\n", &gptr_var, sizeof(value));
+    
+    WAL_DEBUG_LOG("calling var.raw_offset()...\n");
+    WAL_DEBUG_LOG("var.raw_offset()=%lu\n", gptr_var.raw_offset());
+    
+    if (!j_area) {
+        WAL_DEBUG_LOG("ERROR - journal area is null\n");
+        throw std::runtime_error("WAL_STORE: journal area is null");
+    }
+    
+    WALEntry entry{sizeof(value), gptr_var.raw_offset()};
+    WAL_DEBUG_LOG("entry.val_size=%lu, entry.data_offset=%lu\n", 
+           entry.val_size, entry.data_offset);
+    
+    *reinterpret_cast<WALEntry*>(reinterpret_cast<char*>(j_area) + j_end) = entry;
+    j_end += sizeof(WALEntry);
+    
+    // Copy old value to journal area immediately after WALEntry
+    memcpy(reinterpret_cast<char*>(j_area) + j_end, &(*gptr_var), sizeof(value));
+    j_end += sizeof(value);
+
+    *j_end_ptr = j_end;
+    *gptr_var = value;
+    
+    WAL_DEBUG_LOG("new j_end=%zu, assigned value=%zu\n", j_end, value);
+}
+
+template<typename StructType, typename FieldType>
+inline void wal_store_field(global_ptr<StructType>& gptr, FieldType* field_ptr, 
+                            const FieldType& value, void* j_area, size_t& j_end, 
+                            size_t* j_end_ptr) {
+    uint64_t offset = gptr.raw_offset() + ((char*)field_ptr - (char*)&(*gptr));
+    if (!j_area) {
+        WAL_DEBUG_LOG("ERROR - journal area is null\n");
+        throw std::runtime_error("WAL_STORE_FIELD: journal area is null");
+    }
+
+    WALEntry entry {sizeof(FieldType), offset};
+
+    WAL_DEBUG_LOG("entry.val_size=%lu, entry.data_offset=%lu\n", entry.val_size, entry.data_offset);
+
+    *reinterpret_cast<WALEntry*>(reinterpret_cast<char*>(j_area) + j_end) = entry;
+    j_end += sizeof(WALEntry);
+
+    memcpy(reinterpret_cast<char*>(j_area) + j_end, field_ptr, sizeof(FieldType));
+    j_end += sizeof(FieldType);
+
+    *j_end_ptr = j_end;
+    *field_ptr = value;
+
+    WAL_DEBUG_LOG("new j_end=%zu, assigned value=%zu\n", j_end, value);
+}
+
 // Need to use ShmContext to get journal area here
 // Reach into the fat pointer which is the start of the first parameter
 #define WAL_BEGIN(first_param)                                                 \
@@ -124,13 +150,19 @@ inline void debug_wal_begin(void*& j_area, size_t& j_start, size_t*& j_end_ptr, 
   size_t j_start;                                                              \
   size_t *j_end_ptr;                                                           \
   size_t j_end;                                                                \
-  debug_wal_begin(j_area, j_start, j_end_ptr, j_end, &(first_param))
+  wal_begin(j_area, j_start, j_end_ptr, j_end, &(first_param))
 
 // Macro for storing to global_ptr containing primitive
 #define WAL_STORE(var, value) \
-  debug_wal_store(var, value, j_area, j_end, j_end_ptr)
+  wal_store(var, value, j_area, j_end, j_end_ptr)
 
-#define WAL_END
+// Macro for storing to a field of a struct in a global ptr
+#define WAL_STORE_FIELD(type, member, field_ptr, value) \
+  wal_store_field(*GLOBAL_PTR_CONTAINER_OF(field_ptr, type, member), field_ptr, value, j_area, j_end, j_end_ptr)
+
+// Macro to get the address of the global_ptr itself from a pointer to a member
+#define GLOBAL_PTR_CONTAINER_OF(ptr, type, member) \
+    ((global_ptr<type>*)((char *)(ptr) - offsetof(type, member)))
 
 } // namespace diancie
 #endif
