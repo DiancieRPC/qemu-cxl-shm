@@ -28,6 +28,17 @@ public:
 
 };
 
+/**
+  A pointer class which "owns" the shared memory.
+  The T* is not stored in the global_ptr, rather it only stores the
+  offset value and accesses the static thread_local ShmContext to get its
+  shm heap address, as the shm heap address is likely to differ from thread
+  to thread, especially among the client/server.
+  All references to the shm object must use its accessor methods.
+  The wrapped object should be trivially copyable. E.g. linked lists which point
+  to objects outside of its container cannot be trivially copied into the shm
+  and accessing a node would not be the correct address space.
+*/
 template <typename T> class global_ptr {
 private:
   template <typename FunctionEnum> friend class DiancieClient;
@@ -40,7 +51,7 @@ private:
   
 public:
   global_ptr() : offset_(0), count_(0) {}
-  
+
   T *local() const {
     void *data_area = ShmContext::get_data_area();
     std::cout << "Dereferencing from data area " << data_area << std::endl;
