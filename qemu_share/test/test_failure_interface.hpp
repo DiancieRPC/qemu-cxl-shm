@@ -10,8 +10,15 @@ using namespace diancie;
 
 enum class TestFailFunctions : uint64_t {
   ADD,
+  PERSON,
+};
+
+struct Person {
+  int age;
+  int income;
 };
 
 DEFINE_DIANCIE_FUNCTION(TestFailFunctions, ADD, void, global_ptr<int>);
+DEFINE_DIANCIE_FUNCTION(TestFailFunctions, PERSON, void, global_ptr<Person>);
 
 #endif

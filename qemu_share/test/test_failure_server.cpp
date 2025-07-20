@@ -15,6 +15,13 @@ void add_impl(global_ptr<int>& a) {
   WAL_STORE(a, *a+1);
 }
 
+void person_impl(global_ptr<Person>& p) {
+  WAL_BEGIN(p);
+  WAL_STORE_FIELD(Person, age, &p->age, p->age + 1);
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  WAL_STORE_FIELD(Person, income, &p->income, p->income + 1);
+}
+
 int main(int argc, char *argv[]) {
   try {
     const std::string device_path = "/dev/cxl_switch_client0";
@@ -27,6 +34,7 @@ int main(int argc, char *argv[]) {
     std::cout << "\n=== Registering RPC Functions ===" << std::endl;
 
     server.register_rpc_function<TestFailFunctions::ADD>(add_impl);
+    server.register_rpc_function<TestFailFunctions::PERSON>(person_impl);
 
     std::cout << "\n=== Registering Service ===" << std::endl;
     if (!server.register_service()) {

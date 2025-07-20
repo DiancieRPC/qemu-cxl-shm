@@ -58,10 +58,7 @@ void test_basic_shm(DiancieClient<TestCopyFunctions>& client) {
         
         std::cout << "\n=== Testing shm person ===" << std::endl;
 
-        auto shm_person = client.shm_new_<Person>();
-        shm_person->age = 25;
-        shm_person->salary = 100;
-        shm_person->kill_count = 0;
+        auto shm_person = client.shm_new<Person>(Person{25, 100, 0});
 
         std::cout << "Created person on shm at " << &shm_person << std::endl;
 
