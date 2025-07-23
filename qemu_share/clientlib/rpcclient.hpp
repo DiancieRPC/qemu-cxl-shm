@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
-#include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -14,7 +13,6 @@
 
 #include "../includes/a_cxl_connector.hpp"
 #include "../includes/cxl_switch_ipc.h"
-#include "../includes/ioctl_defs.h"
 #include "../includes/qemu_cxl_connector.hpp"
 #include "../includes/rpc_interface.hpp"
 #include "../includes/mmio.hpp"
@@ -59,6 +57,7 @@ private:
   QueueEntry *client_queue_;
   QueueEntry *server_queue_;
   uint64_t data_area_;
+  uint64_t data_area_size_;
   // We only need one queue offset for both queues
   // Our RPC system is synchronous: there only ever
   uint64_t queue_offset_ = 0;
@@ -90,6 +89,7 @@ public:
     server_queue_ = reinterpret_cast<QueueEntry *>(
         base_addr_ + DiancieHeap::SERVER_QUEUE_OFFSET);
     data_area_ = base_addr_ + DiancieHeap::DATA_AREA_OFFSET;
+    data_area_size_ = DiancieHeap::get_data_area_size(base_size_);
     next_data_offset_ = 0;
 
     // 2. Map mem window
@@ -136,19 +136,29 @@ public:
 
     std::cout << "ctx is " << ctx.get_data_area() << std::endl;
 
-    // ... | Function Id | Args | Result | ...
+    // ... | Function Id | Journal start | Journal end | Args | Result | ...
     constexpr size_t fid_size = sizeof(FunctionEnum);
+    constexpr size_t j_offset_size = sizeof(uint64_t);
     constexpr size_t args_size = sizeof(ArgsTuple);
+    constexpr size_t args_offset = fid_size + j_offset_size * 2;
+    constexpr size_t results_offset = args_offset + args_size;
     constexpr size_t result_size =
         std::is_void_v<RetType> ? 0 : sizeof(RetType);
-    const size_t total_size = fid_size + args_size + result_size;
+    const size_t total_size = fid_size + j_offset_size * 2 + args_size + result_size;
     // Client does not care about q_posns.
     uint64_t request_base = data_area_ + next_data_offset_;
+    // Handle wrap-around in data area
+    if (request_base + total_size >= data_area_ + data_area_size_) {
+      // Note: This will not work. Will throw error for now.
+      // I realised the next data offset does not account for allocation!!
+      throw std::runtime_error("Out of memory!");
+    }
+
     FunctionEnum *func_id_ptr = reinterpret_cast<FunctionEnum *>(request_base);
     void *args_region =
-        reinterpret_cast<void *>(request_base + fid_size);
+        reinterpret_cast<void *>(request_base + args_offset);
     void *result_region = reinterpret_cast<void *>(
-        request_base + fid_size + args_size);
+        request_base + results_offset);
 
     std::cout << "Simple memory layout:" << std::endl;
     std::cout << "  func_id_ptr: 0x" << std::hex
@@ -156,9 +166,11 @@ public:
               << std::endl;
     std::cout << "  args_region: 0x" << std::hex
               << reinterpret_cast<uintptr_t>(args_region) << std::dec
+              << "  offset: " << args_offset 
               << std::endl;
-    std::cout << "  result_region: 0x" << std::hex
+              std::cout << "  result_region: 0x" << std::hex
               << reinterpret_cast<uintptr_t>(result_region) << std::dec
+              << "  offset: " << results_offset 
               << std::endl;
 
     // Write function ID
@@ -185,7 +197,7 @@ public:
     // Wait for server's response: This is blocking as we only adopt sync model
     while (server_queue_[queue_offset_].get_flag() != commit_flag_) {
       // TODO: Optimize polling
-      std::this_thread::sleep_for(std::chrono::microseconds(100000));
+      std::this_thread::sleep_for(std::chrono::microseconds(1000000));
     }
     std::cout << "Server processing complete" << std::endl;
 
@@ -326,10 +338,11 @@ private:
   }
 // shmalloc - friend
 private:
-  std::vector<std::pair<uint64_t, size_t>> allocations_;
-public:
   // Use a simple linear allocation scheme - assume no freeing for now
   // Make same assumption (2) as AIFM
+  std::vector<std::pair<uint64_t, size_t>> allocations_;
+
+  // Construct a gptr with no initialization on the object
   template<typename T>
   global_ptr<T> shm_new_(size_t count=1) {
     size_t size = sizeof(T) * count;
@@ -346,6 +359,14 @@ public:
     std::cout << "Next data offset is " << next_data_offset_ << std::endl;
 
     return global_ptr<T>(aligned_offset, count);
+  }
+public:
+  // Construct a gptr by passing in the value to initialize in shm.
+  template<typename T>
+  global_ptr<T> shm_new(T&& value) {
+    global_ptr<T> gptr = shm_new_<T>(1);
+    *gptr = value;
+    return gptr;
   }
 };
 

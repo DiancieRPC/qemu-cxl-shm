@@ -15,6 +15,8 @@ namespace diancie {
 // │  Client Area  │
 // ├───────────────┤◄── Server/Response Queue Offset
 // │  Server Area  │
+// ├───────────────┤◄── Journal Area Offset
+// │  Journal Area │
 // ├───────────────┤◄── Data Area Offset
 // │               │
 // │               │
@@ -108,28 +110,34 @@ public:
 /// Idea: Store the offsets for server/client queue at the beginning
 /// Idea: Enumerate the fixed offsets for server/client queue
 class DiancieHeap {
-private:
-
 public:
   // Each queue entry is 64 bits, or 8 bytes.
   static constexpr int NUM_QUEUE_ENTRIES = 128;
   // 64 bits can identify 2**64 queue entries
-  static constexpr uint64_t QUEUE_POSITION = 0; // Position for client/server queue
+  static constexpr uint64_t QUEUE_POSITION      = 0; // Position for client/server queue
+  static constexpr uint64_t QUEUE_POSITION_SIZE = 8; // Position for client/server queue
 
-  static constexpr uint64_t CLIENT_QUEUE_OFFSET = 8; // after queue position
+  static constexpr uint64_t CLIENT_QUEUE_OFFSET = QUEUE_POSITION + QUEUE_POSITION_SIZE;
   static constexpr size_t   CLIENT_QUEUE_SIZE   = NUM_QUEUE_ENTRIES * 8;
 
   static constexpr uint64_t SERVER_QUEUE_OFFSET = CLIENT_QUEUE_OFFSET + CLIENT_QUEUE_SIZE;
   static constexpr uint64_t SERVER_QUEUE_SIZE   = NUM_QUEUE_ENTRIES * 8;
 
-  static constexpr uint64_t DATA_AREA_OFFSET    = CLIENT_QUEUE_OFFSET + CLIENT_QUEUE_SIZE + SERVER_QUEUE_SIZE;
+  // Jotham: Reserving a fixed size for the journal at the moment.
+  //         Determining the WAL log at the function level seems really hard
+  //         and possibly impossible at the current level of my knowledge.
+  //         I want a WAL macro which writes to the journal, and it does not 
+  //         seem possible to achieve this.
+  static constexpr uint64_t JOURNAL_POSN        = SERVER_QUEUE_OFFSET + SERVER_QUEUE_SIZE;
+  static constexpr uint64_t JOURNAL_POSN_SIZE   = 8;
+  static constexpr uint64_t JOURNAL_AREA        = JOURNAL_POSN + JOURNAL_POSN_SIZE;
+  static constexpr uint64_t JOURNAL_SIZE        = 128 * 1024 * 1024; // 128 MB
 
-  size_t size;
-  uint64_t DATA_AREA_SIZE    = size - CLIENT_QUEUE_SIZE - SERVER_QUEUE_SIZE;
+  static constexpr uint64_t DATA_AREA_OFFSET    = JOURNAL_AREA + JOURNAL_SIZE;
 public:
-  DiancieHeap() = default;
-  DiancieHeap(size_t size);
-  ~DiancieHeap();
+  static uint64_t get_data_area_size(size_t size) {
+    return size - QUEUE_POSITION_SIZE - CLIENT_QUEUE_SIZE - SERVER_QUEUE_SIZE - JOURNAL_SIZE - JOURNAL_POSN_SIZE;
+  }
 };
 
 /// Represents an abstract CXL shm connection between a client and server.
